@@ -1467,11 +1467,22 @@ function populateAccountSelects() {
   el('trDestAccount').innerHTML = `<option value="">-- alege cont --</option>` + optionsHtml;
 }
 
+function categoryAllowedForAccount(category, accountId) {
+  if (!category.restricted_account_id) return true;
+  return String(category.restricted_account_id) === String(accountId);
+}
+
 function populateCategorySelect() {
   const select = el('txCategory');
-  const filtered = categories.filter(c => c.type === currentType);
+  const accountId = el('txAccount').value;
+  const filtered = categories.filter(c => c.type === currentType && categoryAllowedForAccount(c, accountId));
+  const previousValue = select.value;
   select.innerHTML = '<option value="">-- alege categoria --</option>' +
     filtered.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+  // A category that was valid for the old account may no longer be — never leave an
+  // invalid account/category combination silently selected.
+  select.value = filtered.some(c => c.name === previousValue) ? previousValue : '';
+  syncQuickCategoryActive();
 }
 
 // ---------- Mode / type toggles ----------
@@ -1493,6 +1504,10 @@ el('typeToggle').addEventListener('click', (e) => {
   populateCategorySelect();
   renderQuickCategories();
   setFieldError('txCategoryError', false);
+});
+
+el('txAccount').addEventListener('change', () => {
+  populateCategorySelect();
 });
 
 el('txQuickCategories').addEventListener('click', (e) => {

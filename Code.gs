@@ -119,6 +119,27 @@ function setupBudgetPercentMigration() {
   }
 }
 
+// Adds restricted_account_id to Categories (empty by default), then sets it to 3 (the
+// "Economii pe termen lung / Neprevăzute" account) for "Cheltuieli pe termen lung/Neprevăzute"
+// specifically — a one-time manual restriction so that category can only be logged against
+// that account. Every other category keeps the field empty. Safe to re-run.
+function setupCategoryRestrictionMigration() {
+  var sheet = getSheet_(SHEETS.CATEGORIES);
+  if (sheet.getRange(1, 3).getValue() !== 'restricted_account_id') {
+    sheet.getRange(1, 3).setValue('restricted_account_id');
+  }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i][1] === 'Cheltuieli pe termen lung/Neprevăzute') {
+      sheet.getRange(2 + i, 3).setValue(3);
+      break;
+    }
+  }
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -308,8 +329,8 @@ function getCategories() {
   var sheet = getSheet_(SHEETS.CATEGORIES);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 2).getValues().map(function (row) {
-    return { type: row[0], name: row[1] };
+  return sheet.getRange(2, 1, lastRow - 1, 3).getValues().map(function (row) {
+    return { type: row[0], name: row[1], restricted_account_id: row[2] || null };
   });
 }
 
