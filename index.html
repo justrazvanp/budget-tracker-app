@@ -215,6 +215,55 @@
     margin-top: 4px;
   }
 
+  .quick-categories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .quick-chip {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .quick-chip.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .suggestion-list {
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    background: #fff;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  .suggestion-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 11px 12px;
+    border: none;
+    border-top: 1px solid var(--border);
+    background: none;
+    font-size: 0.95rem;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .suggestion-item:first-child { border-top: none; }
+  .suggestion-item:active { background: var(--bg); }
+
   .status-loading {
     text-align: center;
     color: var(--muted);
@@ -253,13 +302,15 @@
       <select id="txAccount"></select>
 
       <label for="txCategory">Categorie</label>
+      <div class="quick-categories hidden" id="txQuickCategories"></div>
       <select id="txCategory">
         <option value="">-- alege categoria --</option>
       </select>
       <div class="field-error" id="txCategoryError">Alege o categorie.</div>
 
       <label for="txDescription">Descriere</label>
-      <input type="text" id="txDescription" placeholder="ex: Cumpărături">
+      <input type="text" id="txDescription" autocomplete="off" placeholder="ex: Cumpărături">
+      <div class="suggestion-list hidden" id="txDescriptionSuggestions"></div>
 
       <label for="txAmount">Sumă</label>
       <input type="number" id="txAmount" min="0" step="0.01" placeholder="0.00">
@@ -308,10 +359,16 @@ const API_TOKEN = "57VLsIn_u7z1QAJ5wNWiat17BgIvip0e";
 
 let accounts = [];
 let categories = [];
+let transactions = [];
+let descriptionIndex = new Map();
 let currentMode = 'transaction';
 let currentType = 'Expense';
 let destAmountManuallyEdited = false;
 let fxDebounceHandle = null;
+
+const TRANSACTION_HISTORY_LIMIT = 200;
+const QUICK_CATEGORY_LIMIT = 4;
+const DESCRIPTION_SUGGESTION_LIMIT = 8;
 
 const el = (id) => document.getElementById(id);
 
@@ -334,6 +391,12 @@ function hideGlobalBanner() {
 
 function setFieldError(id, show) {
   el(id).classList.toggle('show', !!show);
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
 }
 
 // ---------- API helpers ----------
@@ -464,10 +527,156 @@ el('syncNowBtn').addEventListener('click', syncQueue);
 // ---------- Init ----------
 const ACCOUNTS_CACHE_KEY = 'budgeting_cached_accounts';
 const CATEGORIES_CACHE_KEY = 'budgeting_cached_categories';
+const TRANSACTIONS_CACHE_KEY = 'budgeting_cached_transactions';
+
+// ---------- Smart autocomplete (quick categories + description suggestions) ----------
+// Phone keyboards can produce accented characters (ă, â, î) as different Unicode byte
+// sequences (precomposed vs. combining-mark form) depending on how they were typed —
+// normalizing to NFC before comparing/keying avoids silent lookup misses for those.
+function normalizeDescription(str) {
+  return String(str || '').trim().normalize('NFC').toLowerCase();
+}
+
+function trimTransactionHistory(list) {
+  return list.slice()
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id))
+    .slice(0, TRANSACTION_HISTORY_LIMIT);
+}
+
+function buildDescriptionIndex(list) {
+  const index = new Map();
+  list.forEach((t) => {
+    const description = (t.description || '').trim();
+    if (!description) return;
+    const key = normalizeDescription(description);
+    if (!index.has(key)) index.set(key, { displayName: description, count: 0, latest: t });
+    const entry = index.get(key);
+    entry.count += 1;
+    const isNewer = String(t.date).localeCompare(String(entry.latest.date)) > 0 ||
+      (t.date === entry.latest.date && Number(t.id) > Number(entry.latest.id));
+    if (isNewer) entry.latest = t;
+  });
+  return index;
+}
+
+function computeTopCategories(type, limit) {
+  const counts = new Map();
+  transactions.forEach((t) => {
+    if (t.type !== type || !t.category) return;
+    counts.set(t.category, (counts.get(t.category) || 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([name]) => name);
+}
+
+function renderQuickCategories() {
+  const container = el('txQuickCategories');
+  const top = computeTopCategories(currentType, QUICK_CATEGORY_LIMIT);
+  if (top.length === 0) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+  container.classList.remove('hidden');
+  container.innerHTML = top.map((name) =>
+    `<button type="button" class="quick-chip" data-category="${escapeHtml(name)}">${escapeHtml(name)}</button>`
+  ).join('');
+  syncQuickCategoryActive();
+}
+
+function syncQuickCategoryActive() {
+  const value = el('txCategory').value;
+  document.querySelectorAll('#txQuickCategories .quick-chip').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.category === value);
+  });
+}
+
+function hideDescriptionSuggestions() {
+  const list = el('txDescriptionSuggestions');
+  list.classList.add('hidden');
+  list.innerHTML = '';
+}
+
+function updateDescriptionSuggestions() {
+  const query = normalizeDescription(el('txDescription').value);
+  if (!query || descriptionIndex.size === 0) {
+    hideDescriptionSuggestions();
+    return;
+  }
+  const matches = Array.from(descriptionIndex.entries())
+    .filter(([key]) => key.includes(query))
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, DESCRIPTION_SUGGESTION_LIMIT);
+  if (matches.length === 0) {
+    hideDescriptionSuggestions();
+    return;
+  }
+  const list = el('txDescriptionSuggestions');
+  list.classList.remove('hidden');
+  list.innerHTML = matches.map(([key, entry]) =>
+    `<button type="button" class="suggestion-item" data-key="${escapeHtml(key)}">${escapeHtml(entry.displayName)}</button>`
+  ).join('');
+}
+
+// Applies category/amount straight from the matched entry object rather than re-parsing
+// the input field's text — avoids depending on native mobile autocomplete UI/events at all.
+function applyDescriptionEntry(entry) {
+  const categoryValid = categories.some((c) => c.type === currentType && c.name === entry.latest.category);
+  if (categoryValid) {
+    el('txCategory').value = entry.latest.category;
+    setFieldError('txCategoryError', false);
+    syncQuickCategoryActive();
+  }
+  el('txAmount').value = entry.latest.amount;
+}
+
+function maybeAutofillFromDescription() {
+  const value = normalizeDescription(el('txDescription').value);
+  if (!value) return;
+  const entry = descriptionIndex.get(value);
+  if (!entry) return;
+  applyDescriptionEntry(entry);
+}
+
+// A PWA resume (reopening after the OS backgrounds it) often does not re-run this script,
+// so a transaction just submitted must be folded into in-memory history right away —
+// otherwise the next entry in the same session won't get category/amount prefill for it
+// until a full reload re-fetches from the server.
+function recordLocalTransaction(payload, serverId) {
+  transactions.push({
+    id: serverId != null ? serverId : Date.now(),
+    account_id: payload.account_id,
+    date: payload.date,
+    type: payload.type,
+    category: payload.category,
+    description: payload.description,
+    amount: payload.amount
+  });
+  transactions = trimTransactionHistory(transactions);
+  descriptionIndex = buildDescriptionIndex(transactions);
+  localStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify(transactions));
+  renderQuickCategories();
+}
+
+async function loadTransactionHistory() {
+  try {
+    const data = await apiGet('getTransactions');
+    transactions = trimTransactionHistory(data);
+    localStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify(transactions));
+  } catch (err) {
+    const cached = localStorage.getItem(TRANSACTIONS_CACHE_KEY);
+    transactions = cached ? JSON.parse(cached) : [];
+  }
+  descriptionIndex = buildDescriptionIndex(transactions);
+  renderQuickCategories();
+}
 
 function renderApp() {
   populateAccountSelects();
   populateCategorySelect();
+  renderQuickCategories();
   el('txDate').value = todayStr();
   el('trDate').value = todayStr();
 
@@ -541,7 +750,40 @@ el('typeToggle').addEventListener('click', (e) => {
   currentType = btn.dataset.type;
   document.querySelectorAll('#typeToggle button').forEach(b => b.classList.toggle('active', b === btn));
   populateCategorySelect();
+  renderQuickCategories();
   setFieldError('txCategoryError', false);
+});
+
+el('txQuickCategories').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-category]');
+  if (!btn) return;
+  el('txCategory').value = btn.dataset.category;
+  setFieldError('txCategoryError', false);
+  syncQuickCategoryActive();
+});
+
+el('txCategory').addEventListener('change', syncQuickCategoryActive);
+
+el('txDescription').addEventListener('input', () => {
+  updateDescriptionSuggestions();
+  maybeAutofillFromDescription();
+});
+
+el('txDescriptionSuggestions').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-key]');
+  if (!btn) return;
+  const entry = descriptionIndex.get(btn.dataset.key);
+  if (!entry) return;
+  el('txDescription').value = entry.displayName;
+  applyDescriptionEntry(entry);
+  hideDescriptionSuggestions();
+});
+
+document.addEventListener('click', (e) => {
+  const list = el('txDescriptionSuggestions');
+  if (list.classList.contains('hidden')) return;
+  if (e.target === el('txDescription') || list.contains(e.target)) return;
+  hideDescriptionSuggestions();
 });
 
 // ---------- Transfer: prevent same account, drive FX autofill ----------
@@ -642,6 +884,7 @@ el('transactionForm').addEventListener('submit', async (e) => {
       `Salvat! Sold ${account ? account.name : data.account_id}: ${Number(data.balance).toFixed(2)} ${account ? account.currency : ''}`,
       'success'
     );
+    recordLocalTransaction(txPayload, data.id);
 
     // Reset to defaults, keep type/category as-is for fast repeated entry.
     const checking = accounts.find(a => a.name === 'Checking');
@@ -649,16 +892,19 @@ el('transactionForm').addEventListener('submit', async (e) => {
     el('txDate').value = todayStr();
     el('txAmount').value = '';
     el('txDescription').value = '';
+    hideDescriptionSuggestions();
   } catch (err) {
     if (err instanceof NetworkError) {
       enqueueRequest('addTransaction', txPayload);
       showGlobalBanner('Salvat local, se va sincroniza automat.', 'offline');
+      recordLocalTransaction(txPayload, null);
 
       const checking = accounts.find(a => a.name === 'Checking');
       if (checking) el('txAccount').value = checking.id;
       el('txDate').value = todayStr();
       el('txAmount').value = '';
       el('txDescription').value = '';
+      hideDescriptionSuggestions();
     } else {
       showGlobalBanner('Eroare la salvare: ' + err.message, 'error');
     }
@@ -741,6 +987,7 @@ el('transferForm').addEventListener('submit', async (e) => {
 });
 
 init();
+loadTransactionHistory();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

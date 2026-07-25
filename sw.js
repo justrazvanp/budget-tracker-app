@@ -1,5 +1,5 @@
 // Bump this on every deploy so clients pick up fresh app-shell files.
-const CACHE_NAME = 'budgeting-shell-v1';
+const CACHE_NAME = 'budgeting-shell-v4';
 
 const APP_SHELL = [
   './',
