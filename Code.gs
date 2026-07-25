@@ -200,6 +200,31 @@ function setupTransferConfirmationMigration() {
   }
 }
 
+// RecurringTransfers.source_amount/dest_amount (both "fixed" at creation) become
+// fixed_side/fixed_amount — only one side is ever actually known exactly, the other gets
+// estimated via FX at generation time. Existing rows default to fixed_side = "source",
+// carrying over their old source_amount value as fixed_amount (their dest_amount is
+// discarded — it was never the exact one for a cross-currency transfer anyway). Safe to
+// re-run: no-ops once column 4 already reads "fixed_side".
+function setupRecurringTransferFixedSideMigration() {
+  var sheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+  if (sheet.getRange(1, 4).getValue() === 'fixed_side') return;
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    var oldSourceAmounts = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+    var fixedSideCol = [], fixedAmountCol = [];
+    for (var i = 0; i < oldSourceAmounts.length; i++) {
+      fixedSideCol.push(['source']);
+      fixedAmountCol.push([oldSourceAmounts[i][0]]);
+    }
+    sheet.getRange(2, 4, oldSourceAmounts.length, 1).setValues(fixedSideCol);
+    sheet.getRange(2, 5, oldSourceAmounts.length, 1).setValues(fixedAmountCol);
+  }
+  sheet.getRange(1, 4).setValue('fixed_side');
+  sheet.getRange(1, 5).setValue('fixed_amount');
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -495,6 +520,14 @@ function validateMonthOfYear_(value, frequency) {
   return month;
 }
 
+// Defaults to "source" when omitted — the frontend doesn't even show a choice when the two
+// accounts share a currency, since which side is "fixed" is moot there.
+function validateFixedSide_(value) {
+  var side = value || 'source';
+  if (side !== 'source' && side !== 'dest') throw new Error('fixed_side must be "source" or "dest"');
+  return side;
+}
+
 function addRecurring(p) {
   requireFields_(p, ['account_id', 'type', 'category', 'amount', 'day_of_month', 'frequency']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
@@ -565,8 +598,8 @@ function getRecurringTransfers() {
       id: row[0],
       source_account_id: row[1],
       dest_account_id: row[2],
-      source_amount: row[3],
-      dest_amount: row[4],
+      fixed_side: row[3] || 'source',
+      fixed_amount: row[4],
       frequency: row[5] || 'Lunar',
       day_of_month: row[6],
       month_of_year: row[7] || null,
@@ -577,10 +610,10 @@ function getRecurringTransfers() {
 }
 
 function addRecurringTransfer(p) {
-  requireFields_(p, ['source_account_id', 'dest_account_id', 'source_amount', 'dest_amount', 'day_of_month', 'frequency']);
-  var sourceAmount = Number(p.source_amount);
-  var destAmount = Number(p.dest_amount);
-  if (!(sourceAmount > 0) || !(destAmount > 0)) throw new Error('source_amount and dest_amount must be positive numbers');
+  requireFields_(p, ['source_account_id', 'dest_account_id', 'fixed_amount', 'day_of_month', 'frequency']);
+  var fixedAmount = Number(p.fixed_amount);
+  if (!(fixedAmount > 0)) throw new Error('fixed_amount must be a positive number');
+  var fixedSide = validateFixedSide_(p.fixed_side);
   var dayOfMonth = validateDayOfMonth_(p.day_of_month);
   var frequency = validateFrequency_(p.frequency);
   var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
@@ -595,7 +628,7 @@ function addRecurringTransfer(p) {
     var sheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
     id = nextId_(sheet);
     sheet.appendRow([
-      id, Number(p.source_account_id), Number(p.dest_account_id), sourceAmount, destAmount,
+      id, Number(p.source_account_id), Number(p.dest_account_id), fixedSide, fixedAmount,
       frequency, dayOfMonth, monthOfYear, true, ''
     ]);
   } finally {
@@ -609,10 +642,10 @@ function addRecurringTransfer(p) {
 // updateRecurring: internal bookkeeping for generateRecurringTransfers_, not something an
 // edit should reset.
 function updateRecurringTransfer(p) {
-  requireFields_(p, ['id', 'source_account_id', 'dest_account_id', 'source_amount', 'dest_amount', 'day_of_month', 'frequency', 'active']);
-  var sourceAmount = Number(p.source_amount);
-  var destAmount = Number(p.dest_amount);
-  if (!(sourceAmount > 0) || !(destAmount > 0)) throw new Error('source_amount and dest_amount must be positive numbers');
+  requireFields_(p, ['id', 'source_account_id', 'dest_account_id', 'fixed_amount', 'day_of_month', 'frequency', 'active']);
+  var fixedAmount = Number(p.fixed_amount);
+  if (!(fixedAmount > 0)) throw new Error('fixed_amount must be a positive number');
+  var fixedSide = validateFixedSide_(p.fixed_side);
   var dayOfMonth = validateDayOfMonth_(p.day_of_month);
   var frequency = validateFrequency_(p.frequency);
   var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
@@ -628,7 +661,7 @@ function updateRecurringTransfer(p) {
     var rowIndex = findRowIndexById_(sheet, p.id);
     if (rowIndex === -1) throw new Error('Unknown recurring transfer id: ' + p.id);
     sheet.getRange(rowIndex, 1, 1, 9).setValues([[
-      Number(p.id), Number(p.source_account_id), Number(p.dest_account_id), sourceAmount, destAmount,
+      Number(p.id), Number(p.source_account_id), Number(p.dest_account_id), fixedSide, fixedAmount,
       frequency, dayOfMonth, monthOfYear, active
     ]]);
   } finally {
@@ -951,6 +984,8 @@ function generateRecurringTransfers() {
   var lastRow = recurringSheet.getLastRow();
   if (lastRow < 2) return { generated: 0 };
 
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   var generated = 0;
@@ -981,12 +1016,40 @@ function generateRecurringTransfers() {
       }
 
       var recurringTransferId = row[0], sourceAccountId = row[1], destAccountId = row[2],
-        sourceAmount = row[3], destAmount = row[4];
-      var fxRate = Number(destAmount) / Number(sourceAmount);
+        fixedSide = row[3] || 'source', fixedAmount = Number(row[4]);
+
+      var sourceRowIndex = findRowIndexById_(accountsSheet, sourceAccountId);
+      var destRowIndex = findRowIndexById_(accountsSheet, destAccountId);
+      var sourceCurrency = String(accountsSheet.getRange(sourceRowIndex, 3).getValue()).toUpperCase();
+      var destCurrency = String(accountsSheet.getRange(destRowIndex, 3).getValue()).toUpperCase();
+
+      var sourceAmount, destAmount;
+      if (sourceCurrency === destCurrency) {
+        sourceAmount = fixedAmount;
+        destAmount = fixedAmount;
+      } else {
+        // Only the fixed side is known exactly — the other is an FX estimate the user
+        // corrects with the real bank amount when they confirm. A failed FX lookup skips
+        // this item for today rather than aborting the whole batch; it retries tomorrow
+        // since last_generated_period is only stamped after a successful generation.
+        try {
+          if (fixedSide === 'dest') {
+            destAmount = fixedAmount;
+            sourceAmount = fixedAmount * getFxRate({ from_currency: destCurrency, to_currency: sourceCurrency }).rate;
+          } else {
+            sourceAmount = fixedAmount;
+            destAmount = fixedAmount * getFxRate({ from_currency: sourceCurrency, to_currency: destCurrency }).rate;
+          }
+        } catch (fxErr) {
+          continue;
+        }
+      }
+      var fxRate = destAmount / sourceAmount;
+
       var newId = nextId_(trSheet);
       trSheet.appendRow([
-        newId, today, Number(sourceAccountId), Number(destAccountId), Number(sourceAmount),
-        Number(destAmount), fxRate, '', Number(recurringTransferId), false
+        newId, today, Number(sourceAccountId), Number(destAccountId), sourceAmount,
+        destAmount, fxRate, '', Number(recurringTransferId), false
       ]);
       recurringSheet.getRange(2 + i, 10).setValue(periodKey);
       generated++;

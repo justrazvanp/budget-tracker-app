@@ -508,6 +508,14 @@
   .pending-amount-input { flex: 1; }
   .pending-transfer-amount-input { flex: 1; min-width: 0; }
 
+  .pending-transfer-field { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+  .pending-amount-tag { font-size: 0.66rem; font-weight: 700; line-height: 1.2; }
+  .pending-amount-tag.pending-amount-fixed { color: var(--muted); }
+  .pending-amount-tag.pending-amount-estimate { color: var(--warning-text); }
+
+  .pending-transfer-amount-input[readonly] { background: var(--bg); color: var(--muted); }
+
   .pending-confirm-btn {
     flex-shrink: 0;
     border: none;
@@ -997,13 +1005,18 @@
           <select id="recTrDestAccount"></select>
           <div class="field-error" id="recTrAccountError">Conturile sursă și destinație trebuie să fie diferite.</div>
 
-          <label for="recTrSourceAmount">Sumă sursă</label>
-          <input type="number" id="recTrSourceAmount" min="0" step="0.01" placeholder="0.00">
-          <div class="field-error" id="recTrSourceAmountError">Introdu o sumă pozitivă.</div>
+          <div id="recTrFixedSideField" class="hidden">
+            <label>Suma fixă e:</label>
+            <div class="segmented" id="recTrFixedSideToggle">
+              <button type="button" data-side="source" class="active">Sursă</button>
+              <button type="button" data-side="dest">Destinație</button>
+            </div>
+          </div>
 
-          <label for="recTrDestAmount">Sumă destinație</label>
-          <input type="number" id="recTrDestAmount" min="0" step="0.01" placeholder="0.00">
-          <div class="field-error" id="recTrDestAmountError">Introdu o sumă pozitivă.</div>
+          <label for="recTrFixedAmount">Sumă fixă</label>
+          <input type="number" id="recTrFixedAmount" min="0" step="0.01" placeholder="0.00">
+          <div class="field-error" id="recTrFixedAmountError">Introdu o sumă pozitivă.</div>
+          <div class="hint" id="recTrFixedAmountHint"></div>
 
           <label>Frecvență</label>
           <div class="segmented" id="recTrFrequencyToggle">
@@ -1957,7 +1970,7 @@ function switchTab(tab) {
 // ================= DASHBOARD =================
 let dash = {
   accounts: [], transactions: [], transfers: [], recurring: [], recurringTransfers: [],
-  budgets: [], pending: [], pendingTransfers: []
+  budgets: [], pending: [], pendingTransfers: [], fxRates: {}
 };
 let dashboardLoaded = false;
 let dashboardLoading = false;
@@ -2049,6 +2062,7 @@ async function loadDashboard(force) {
     dash.pending = pendingData;
     dash.pendingTransfers = pendingTransfersData;
     categories = categoriesData;
+    dash.fxRates = await fetchFxRatesForRecurringTransfers(dash.accounts, dash.recurringTransfers);
     dashboardLoaded = true;
     el('dashUpdatedAt').textContent = new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
     renderDashboard();
@@ -2279,6 +2293,75 @@ function computeRecentInvestmentMonthlyAverage() {
 
 const PROJECTION_MONTHS_DEFAULT = 6;
 
+// Pre-fetches an FX rate for every distinct currency pair among active, cross-currency
+// recurring transfers, once per Dashboard/Simulator load — so the (synchronous) projection
+// math below never needs to await a network call mid-computation. A failed lookup for a
+// given pair just leaves it out of the cache; estimateRecurringTransferSideAmount falls
+// back to the fixed amount itself when a rate is missing.
+async function fetchFxRatesForRecurringTransfers(accountsList, recurringTransfersList) {
+  const pairs = new Set();
+  recurringTransfersList.filter(rt => rt.active).forEach(rt => {
+    const srcAcc = accountsList.find(a => String(a.id) === String(rt.source_account_id));
+    const dstAcc = accountsList.find(a => String(a.id) === String(rt.dest_account_id));
+    if (!srcAcc || !dstAcc || srcAcc.currency === dstAcc.currency) return;
+    // The conversion direction depends on which side is fixed — estimating the dest amount
+    // needs source->dest, estimating the source amount needs dest->source (the reverse).
+    const fixedSide = rt.fixed_side || 'source';
+    const from = fixedSide === 'source' ? srcAcc.currency : dstAcc.currency;
+    const to = fixedSide === 'source' ? dstAcc.currency : srcAcc.currency;
+    pairs.add(from + '_' + to);
+  });
+
+  const rates = {};
+  await Promise.all(Array.from(pairs).map(async (pair) => {
+    const [from, to] = pair.split('_');
+    try {
+      const fx = await apiGet('getFxRate', { from_currency: from, to_currency: to });
+      rates[pair] = fx.rate;
+    } catch (err) {
+      // Leave this pair out of the cache — the estimator falls back gracefully.
+    }
+  }));
+  return rates;
+}
+
+// One side of a recurring transfer is exactly known (fixed_side/fixed_amount); the other is
+// an FX estimate. dash.fxRates (populated once per Dashboard/Simulator load — see
+// fetchFxRatesForRecurringTransfers) caches those rates so this stays a synchronous lookup
+// like every other projection primitive. Falls back to the fixed amount itself (no
+// conversion) if a rate is unavailable, which is a rough approximation but keeps the
+// projection from breaking instead of silently producing NaN.
+function estimateRecurringTransferSideAmount(rt, srcCurrency, dstCurrency, wantSide) {
+  if (srcCurrency === dstCurrency) return Number(rt.fixed_amount);
+  const fixedSide = rt.fixed_side || 'source';
+  if (wantSide === fixedSide) return Number(rt.fixed_amount);
+  const fromCurrency = fixedSide === 'source' ? srcCurrency : dstCurrency;
+  const toCurrency = fixedSide === 'source' ? dstCurrency : srcCurrency;
+  const rate = dash.fxRates[fromCurrency + '_' + toCurrency];
+  return rate ? Number(rt.fixed_amount) * rate : Number(rt.fixed_amount);
+}
+
+// Sum of active recurring transfers flowing OUT of (asSource=true) or INTO (asSource=false)
+// the given account, due in calendar month `monthNum` — same Lunar/Anual gating as
+// computeCategoryPredictions' recurring branch.
+function computeRecurringTransferFlow(recurringTransfersList, accountsList, accountId, monthNum, asSource) {
+  return recurringTransfersList
+    .filter(rt => rt.active)
+    .filter(rt => String(asSource ? rt.source_account_id : rt.dest_account_id) === String(accountId))
+    .filter(rt => {
+      const frequency = rt.frequency || 'Lunar';
+      return frequency !== 'Anual' || Number(rt.month_of_year) === monthNum;
+    })
+    .reduce((acc, rt) => {
+      const srcAcc = accountsList.find(a => String(a.id) === String(rt.source_account_id));
+      const dstAcc = accountsList.find(a => String(a.id) === String(rt.dest_account_id));
+      const amount = estimateRecurringTransferSideAmount(
+        rt, srcAcc ? srcAcc.currency : '', dstAcc ? dstAcc.currency : '', asSource ? 'source' : 'dest'
+      );
+      return acc + amount;
+    }, 0);
+}
+
 // Projects one account's balance forward `monthsAhead` months at a constant net monthly
 // rate (that account's own estimated income minus its own estimated expenses — both reuse
 // the exact same primitives as the pooled Dashboard figures, just scoped to this account's
@@ -2288,20 +2371,6 @@ const PROJECTION_MONTHS_DEFAULT = 6;
 // Income is treated as a constant monthly rate (no Anual income concept requested), but
 // expenses are recomputed for EACH projected month so an Anual recurring item only lands
 // in its own month_of_year instead of being smeared across all `monthsAhead` months.
-// Sum of active recurring transfers flowing OUT of (asSource=true) or INTO (asSource=false)
-// the given account, due in calendar month `monthNum` — same Lunar/Anual gating as
-// computeCategoryPredictions' recurring branch.
-function computeRecurringTransferFlow(recurringTransfersList, accountId, monthNum, asSource) {
-  return recurringTransfersList
-    .filter(rt => rt.active)
-    .filter(rt => String(asSource ? rt.source_account_id : rt.dest_account_id) === String(accountId))
-    .filter(rt => {
-      const frequency = rt.frequency || 'Lunar';
-      return frequency !== 'Anual' || Number(rt.month_of_year) === monthNum;
-    })
-    .reduce((acc, rt) => acc + Number(asSource ? rt.source_amount : rt.dest_amount), 0);
-}
-
 function computeAccountProjection(account, monthsAhead, extra) {
   const accountTx = dash.transactions.filter(t => String(t.account_id) === String(account.id));
   const accountRecurring = dash.recurring.filter(r => String(r.account_id) === String(account.id));
@@ -2318,8 +2387,8 @@ function computeAccountProjection(account, monthsAhead, extra) {
     const probeMonthNum = Number(probe.split('-')[1]);
     const monthPredictions = computeCategoryPredictions(accountTx, accountRecurring, expenseCategories, probeMonthNum);
     const monthExpense = monthPredictions.reduce((acc, p) => acc + (p.amount || 0), 0);
-    const transferOut = computeRecurringTransferFlow(dash.recurringTransfers, account.id, probeMonthNum, true);
-    const transferIn = computeRecurringTransferFlow(dash.recurringTransfers, account.id, probeMonthNum, false);
+    const transferOut = computeRecurringTransferFlow(dash.recurringTransfers, dash.accounts, account.id, probeMonthNum, true);
+    const transferIn = computeRecurringTransferFlow(dash.recurringTransfers, dash.accounts, account.id, probeMonthNum, false);
     const extraApplies = !!extra && probe >= extra.startMonthKey;
     const netMonthly = incomeBase - monthExpense - transferOut + transferIn - (extraApplies ? extra.amount : 0);
     balance += netMonthly;
@@ -2611,14 +2680,37 @@ function renderPendingConfirmations() {
     el('dashPendingTransferList').innerHTML = dash.pendingTransfers.map(tr => {
       const srcAccount = dash.accounts.find(a => String(a.id) === String(tr.source_account_id));
       const dstAccount = dash.accounts.find(a => String(a.id) === String(tr.dest_account_id));
+      const differentCurrency = !!(srcAccount && dstAccount && srcAccount.currency !== dstAccount.currency);
+      const recurringDef = dash.recurringTransfers.find(rt => String(rt.id) === String(tr.recurring_transfer_id));
+      const fixedSide = recurringDef ? (recurringDef.fixed_side || 'source') : null;
+
+      const sourceTag = differentCurrency && fixedSide
+        ? (fixedSide === 'source'
+          ? '<div class="pending-amount-tag pending-amount-fixed">sumă fixă, cunoscută</div>'
+          : '<div class="pending-amount-tag pending-amount-estimate">estimare, corectează cu suma reală</div>')
+        : '';
+      const destTag = differentCurrency && fixedSide
+        ? (fixedSide === 'dest'
+          ? '<div class="pending-amount-tag pending-amount-fixed">sumă fixă, cunoscută</div>'
+          : '<div class="pending-amount-tag pending-amount-estimate">estimare, corectează cu suma reală</div>')
+        : '';
+      const sourceReadonly = (differentCurrency && fixedSide === 'source') ? 'readonly' : '';
+      const destReadonly = (differentCurrency && fixedSide === 'dest') ? 'readonly' : '';
+
       const subParts = [tr.date];
       if (tr.description) subParts.unshift(tr.description);
       return `<div class="list-item" data-id="${tr.id}">
         <div class="list-item-title">${escapeHtml(srcAccount ? srcAccount.name : '?')} → ${escapeHtml(dstAccount ? dstAccount.name : '?')}</div>
         <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
         <div class="pending-confirm-row">
-          <input type="number" min="0" step="0.01" class="pending-transfer-amount-input" data-role="source" value="${tr.source_amount}" placeholder="sumă sursă">
-          <input type="number" min="0" step="0.01" class="pending-transfer-amount-input" data-role="dest" value="${tr.dest_amount}" placeholder="sumă destinație">
+          <div class="pending-transfer-field">
+            <input type="number" min="0" step="0.01" class="pending-transfer-amount-input" data-role="source" value="${tr.source_amount}" placeholder="sumă sursă" ${sourceReadonly}>
+            ${sourceTag}
+          </div>
+          <div class="pending-transfer-field">
+            <input type="number" min="0" step="0.01" class="pending-transfer-amount-input" data-role="dest" value="${tr.dest_amount}" placeholder="sumă destinație" ${destReadonly}>
+            ${destTag}
+          </div>
           <button type="button" class="pending-confirm-btn">Confirmă</button>
         </div>
       </div>`;
@@ -2757,6 +2849,7 @@ let recFrequency = 'Lunar';
 let recurringTransfers = [];
 let editingRecurringTransferId = null;
 let recTrFrequency = 'Lunar';
+let recTrFixedSide = 'source';
 
 async function loadSettings(force) {
   if (settingsLoading) return;
@@ -2985,7 +3078,37 @@ function populateRecurringTransferFormSelects() {
   el('recTrSourceAccount').innerHTML = optionsHtml;
   el('recTrDestAccount').innerHTML = optionsHtml;
   el('recTrMonthOfYear').innerHTML = ROMANIAN_MONTHS.map((name, i) => `<option value="${i + 1}">${name}</option>`).join('');
+  updateRecTrFixedSideVisibility();
 }
+
+// The fixed-side choice only matters (and only shows) when the two accounts have different
+// currencies — with the same currency both amounts are equal anyway, like a manual transfer.
+function updateRecTrFixedSideVisibility() {
+  const sourceAcc = accounts.find(a => String(a.id) === String(el('recTrSourceAccount').value));
+  const destAcc = accounts.find(a => String(a.id) === String(el('recTrDestAccount').value));
+  const differentCurrency = !!(sourceAcc && destAcc && sourceAcc.currency !== destAcc.currency);
+  el('recTrFixedSideField').classList.toggle('hidden', !differentCurrency);
+
+  if (!differentCurrency) {
+    el('recTrFixedAmountHint').textContent = '';
+    return;
+  }
+  const fixedAcc = recTrFixedSide === 'dest' ? destAcc : sourceAcc;
+  const otherAcc = recTrFixedSide === 'dest' ? sourceAcc : destAcc;
+  el('recTrFixedAmountHint').textContent =
+    `Suma exactă, în ${fixedAcc.currency}. Suma în ${otherAcc.currency} va fi estimată la generare și corectată la confirmare cu suma reală din bancă.`;
+}
+
+el('recTrSourceAccount').addEventListener('change', updateRecTrFixedSideVisibility);
+el('recTrDestAccount').addEventListener('change', updateRecTrFixedSideVisibility);
+
+el('recTrFixedSideToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-side]');
+  if (!btn) return;
+  recTrFixedSide = btn.dataset.side;
+  document.querySelectorAll('#recTrFixedSideToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  updateRecTrFixedSideVisibility();
+});
 
 el('recTrFrequencyToggle').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-frequency]');
@@ -3005,6 +3128,12 @@ function renderRecurringTransferList() {
   container.innerHTML = sorted.map(rt => {
     const srcAccount = accounts.find(a => String(a.id) === String(rt.source_account_id));
     const dstAccount = accounts.find(a => String(a.id) === String(rt.dest_account_id));
+    const differentCurrency = !!(srcAccount && dstAccount && srcAccount.currency !== dstAccount.currency);
+    const fixedSide = rt.fixed_side || 'source';
+    const fixedAcc = fixedSide === 'dest' ? dstAccount : srcAccount;
+    const amountLabel = differentCurrency
+      ? `${Number(rt.fixed_amount).toFixed(2)} ${fixedAcc ? escapeHtml(fixedAcc.currency) : ''} (fix, ${fixedSide === 'dest' ? 'destinație' : 'sursă'})`
+      : `${Number(rt.fixed_amount).toFixed(2)} ${srcAccount ? escapeHtml(srcAccount.currency) : ''}`;
     const frequencyLabel = rt.frequency === 'Anual'
       ? `Anual, ${ROMANIAN_MONTHS[Number(rt.month_of_year) - 1] || '?'}`
       : 'Lunar';
@@ -3013,7 +3142,7 @@ function renderRecurringTransferList() {
     return `<div class="list-item ${rt.active ? '' : 'inactive'}">
       <div class="list-item-top">
         <div>
-          <div class="list-item-title">${escapeHtml(srcAccount ? srcAccount.name : '?')} → ${escapeHtml(dstAccount ? dstAccount.name : '?')} · ${Number(rt.source_amount).toFixed(2)} ${srcAccount ? escapeHtml(srcAccount.currency) : ''}</div>
+          <div class="list-item-title">${escapeHtml(srcAccount ? srcAccount.name : '?')} → ${escapeHtml(dstAccount ? dstAccount.name : '?')} · ${amountLabel}</div>
           <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
         </div>
         <div class="list-item-actions">
@@ -3044,7 +3173,7 @@ async function toggleRecurringTransferActive(id, active) {
   try {
     await apiPost('updateRecurringTransfer', {
       id: item.id, source_account_id: item.source_account_id, dest_account_id: item.dest_account_id,
-      source_amount: item.source_amount, dest_amount: item.dest_amount, day_of_month: item.day_of_month,
+      fixed_side: item.fixed_side, fixed_amount: item.fixed_amount, day_of_month: item.day_of_month,
       frequency: item.frequency, month_of_year: item.month_of_year, active
     });
     item.active = active;
@@ -3061,15 +3190,16 @@ function startEditRecurringTransfer(id) {
   editingRecurringTransferId = item.id;
   el('recTrSourceAccount').value = item.source_account_id;
   el('recTrDestAccount').value = item.dest_account_id;
-  el('recTrSourceAmount').value = item.source_amount;
-  el('recTrDestAmount').value = item.dest_amount;
+  recTrFixedSide = item.fixed_side || 'source';
+  document.querySelectorAll('#recTrFixedSideToggle button').forEach(b => b.classList.toggle('active', b.dataset.side === recTrFixedSide));
+  updateRecTrFixedSideVisibility();
+  el('recTrFixedAmount').value = item.fixed_amount;
   el('recTrDayOfMonth').value = item.day_of_month;
   recTrFrequency = item.frequency || 'Lunar';
   document.querySelectorAll('#recTrFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === recTrFrequency));
   el('recTrMonthOfYearField').classList.toggle('hidden', recTrFrequency !== 'Anual');
   el('recTrMonthOfYear').value = item.month_of_year || '1';
-  setFieldError('recTrSourceAmountError', false);
-  setFieldError('recTrDestAmountError', false);
+  setFieldError('recTrFixedAmountError', false);
   setFieldError('recTrDayOfMonthError', false);
   setFieldError('recTrAccountError', false);
   el('recurringTransferFormTitle').textContent = 'Editează transferul recurent';
@@ -3082,15 +3212,16 @@ function resetRecurringTransferForm() {
   editingRecurringTransferId = null;
   el('recTrSourceAccount').value = accounts[0] ? accounts[0].id : '';
   el('recTrDestAccount').value = accounts[1] ? accounts[1].id : (accounts[0] ? accounts[0].id : '');
-  el('recTrSourceAmount').value = '';
-  el('recTrDestAmount').value = '';
+  recTrFixedSide = 'source';
+  document.querySelectorAll('#recTrFixedSideToggle button').forEach(b => b.classList.toggle('active', b.dataset.side === 'source'));
+  updateRecTrFixedSideVisibility();
+  el('recTrFixedAmount').value = '';
   el('recTrDayOfMonth').value = '';
   recTrFrequency = 'Lunar';
   document.querySelectorAll('#recTrFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === 'Lunar'));
   el('recTrMonthOfYearField').classList.add('hidden');
   el('recTrMonthOfYear').value = '1';
-  setFieldError('recTrSourceAmountError', false);
-  setFieldError('recTrDestAmountError', false);
+  setFieldError('recTrFixedAmountError', false);
   setFieldError('recTrDayOfMonthError', false);
   setFieldError('recTrAccountError', false);
   el('recurringTransferFormTitle').textContent = 'Adaugă transfer recurent';
@@ -3106,20 +3237,17 @@ el('recurringTransferForm').addEventListener('submit', async (e) => {
 
   const sourceId = el('recTrSourceAccount').value;
   const destId = el('recTrDestAccount').value;
-  const sourceAmount = parseFloat(el('recTrSourceAmount').value);
-  const destAmount = parseFloat(el('recTrDestAmount').value);
+  const fixedAmount = parseFloat(el('recTrFixedAmount').value);
   const dayOfMonth = parseInt(el('recTrDayOfMonth').value, 10);
   const monthOfYear = recTrFrequency === 'Anual' ? parseInt(el('recTrMonthOfYear').value, 10) : '';
 
   const accountsInvalid = !sourceId || !destId || sourceId === destId;
-  const sourceAmountInvalid = !(sourceAmount > 0);
-  const destAmountInvalid = !(destAmount > 0);
+  const fixedAmountInvalid = !(fixedAmount > 0);
   const dayInvalid = !(dayOfMonth >= 1 && dayOfMonth <= 28);
   setFieldError('recTrAccountError', accountsInvalid);
-  setFieldError('recTrSourceAmountError', sourceAmountInvalid);
-  setFieldError('recTrDestAmountError', destAmountInvalid);
+  setFieldError('recTrFixedAmountError', fixedAmountInvalid);
   setFieldError('recTrDayOfMonthError', dayInvalid);
-  if (accountsInvalid || sourceAmountInvalid || destAmountInvalid || dayInvalid) return;
+  if (accountsInvalid || fixedAmountInvalid || dayInvalid) return;
 
   const submitBtn = el('recTrSubmit');
   submitBtn.disabled = true;
@@ -3129,14 +3257,14 @@ el('recurringTransferForm').addEventListener('submit', async (e) => {
       const existing = recurringTransfers.find(rt => String(rt.id) === String(editingRecurringTransferId));
       await apiPost('updateRecurringTransfer', {
         id: editingRecurringTransferId, source_account_id: sourceId, dest_account_id: destId,
-        source_amount: sourceAmount, dest_amount: destAmount, day_of_month: dayOfMonth,
+        fixed_side: recTrFixedSide, fixed_amount: fixedAmount, day_of_month: dayOfMonth,
         frequency: recTrFrequency, month_of_year: monthOfYear, active: existing ? existing.active : true
       });
       showGlobalBanner('Transferul recurent a fost actualizat.', 'success');
     } else {
       await apiPost('addRecurringTransfer', {
-        source_account_id: sourceId, dest_account_id: destId, source_amount: sourceAmount,
-        dest_amount: destAmount, day_of_month: dayOfMonth, frequency: recTrFrequency, month_of_year: monthOfYear
+        source_account_id: sourceId, dest_account_id: destId, fixed_side: recTrFixedSide,
+        fixed_amount: fixedAmount, day_of_month: dayOfMonth, frequency: recTrFrequency, month_of_year: monthOfYear
       });
       showGlobalBanner('Transferul recurent a fost adăugat.', 'success');
     }
