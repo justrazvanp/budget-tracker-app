@@ -506,6 +506,7 @@
   }
 
   .pending-amount-input { flex: 1; }
+  .pending-transfer-amount-input { flex: 1; min-width: 0; }
 
   .pending-confirm-btn {
     flex-shrink: 0;
@@ -683,7 +684,14 @@
     <div id="dashContent" class="hidden">
       <div class="card hidden" id="dashPendingCard">
         <div class="section-title">De confirmat</div>
-        <div id="dashPendingList"></div>
+        <div id="dashPendingTxSection" class="hidden">
+          <div class="section-title" style="font-size:0.9rem;">Tranzacții de confirmat</div>
+          <div id="dashPendingList"></div>
+        </div>
+        <div id="dashPendingTrSection" class="hidden" style="margin-top:14px;">
+          <div class="section-title" style="font-size:0.9rem;">Transferuri de confirmat</div>
+          <div id="dashPendingTransferList"></div>
+        </div>
       </div>
 
       <div class="card">
@@ -971,6 +979,51 @@
 
           <button type="submit" class="submit-btn" id="recSubmit">Adaugă</button>
           <button type="button" class="icon-btn hidden" id="recCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează editarea</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Transferuri recurente</div>
+        <div id="recurringTransferList"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title" id="recurringTransferFormTitle">Adaugă transfer recurent</div>
+        <form id="recurringTransferForm">
+          <label for="recTrSourceAccount">Cont sursă</label>
+          <select id="recTrSourceAccount"></select>
+
+          <label for="recTrDestAccount">Cont destinație</label>
+          <select id="recTrDestAccount"></select>
+          <div class="field-error" id="recTrAccountError">Conturile sursă și destinație trebuie să fie diferite.</div>
+
+          <label for="recTrSourceAmount">Sumă sursă</label>
+          <input type="number" id="recTrSourceAmount" min="0" step="0.01" placeholder="0.00">
+          <div class="field-error" id="recTrSourceAmountError">Introdu o sumă pozitivă.</div>
+
+          <label for="recTrDestAmount">Sumă destinație</label>
+          <input type="number" id="recTrDestAmount" min="0" step="0.01" placeholder="0.00">
+          <div class="field-error" id="recTrDestAmountError">Introdu o sumă pozitivă.</div>
+
+          <label>Frecvență</label>
+          <div class="segmented" id="recTrFrequencyToggle">
+            <button type="button" data-frequency="Lunar" class="active">Lunar</button>
+            <button type="button" data-frequency="Anual">Anual</button>
+          </div>
+
+          <label for="recTrDayOfMonth">Ziua din lună (1-28)</label>
+          <input type="number" id="recTrDayOfMonth" min="1" max="28" step="1" placeholder="ex: 15">
+          <div class="field-error" id="recTrDayOfMonthError">Introdu o zi între 1 și 28.</div>
+
+          <div id="recTrMonthOfYearField" class="hidden">
+            <label for="recTrMonthOfYear">Luna din an</label>
+            <select id="recTrMonthOfYear"></select>
+          </div>
+
+          <div class="hint">În ziua (și, dacă e anual, luna) respectivă, dacă itemul e activ, se generează automat un transfer de confirmat.</div>
+
+          <button type="submit" class="submit-btn" id="recTrSubmit">Adaugă</button>
+          <button type="button" class="icon-btn hidden" id="recTrCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează editarea</button>
         </form>
       </div>
 
@@ -1902,7 +1955,10 @@ function switchTab(tab) {
 }
 
 // ================= DASHBOARD =================
-let dash = { accounts: [], transactions: [], transfers: [], recurring: [], budgets: [], pending: [] };
+let dash = {
+  accounts: [], transactions: [], transfers: [], recurring: [], recurringTransfers: [],
+  budgets: [], pending: [], pendingTransfers: []
+};
 let dashboardLoaded = false;
 let dashboardLoading = false;
 
@@ -1970,26 +2026,33 @@ async function loadDashboard(force) {
   el('dashRefreshBtn').textContent = 'Se actualizează...';
 
   try {
-    const [accountsData, txData, trData, recurringData, budgetsData, categoriesData, pendingData] = await Promise.all([
+    const [
+      accountsData, txData, trData, recurringData, recurringTransfersData, budgetsData,
+      categoriesData, pendingData, pendingTransfersData
+    ] = await Promise.all([
       apiGet('getAccounts'),
       apiGet('getTransactions'),
       apiGet('getTransfers'),
       apiGet('getRecurring'),
+      apiGet('getRecurringTransfers'),
       apiGet('getBudgets'),
       apiGet('getCategories'),
-      apiGet('getPendingConfirmations')
+      apiGet('getPendingConfirmations'),
+      apiGet('getPendingTransferConfirmations')
     ]);
     dash.accounts = accountsData;
     dash.transactions = txData;
     dash.transfers = trData;
     dash.recurring = recurringData;
+    dash.recurringTransfers = recurringTransfersData;
     dash.budgets = budgetsData;
     dash.pending = pendingData;
+    dash.pendingTransfers = pendingTransfersData;
     categories = categoriesData;
     dashboardLoaded = true;
     el('dashUpdatedAt').textContent = new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
     renderDashboard();
-    updateDashboardBadge(dash.pending.length);
+    updateDashboardBadge(dash.pending.length + dash.pendingTransfers.length);
     el('dashContent').classList.remove('hidden');
   } catch (err) {
     el('dashContent').classList.add('hidden');
@@ -2225,6 +2288,20 @@ const PROJECTION_MONTHS_DEFAULT = 6;
 // Income is treated as a constant monthly rate (no Anual income concept requested), but
 // expenses are recomputed for EACH projected month so an Anual recurring item only lands
 // in its own month_of_year instead of being smeared across all `monthsAhead` months.
+// Sum of active recurring transfers flowing OUT of (asSource=true) or INTO (asSource=false)
+// the given account, due in calendar month `monthNum` — same Lunar/Anual gating as
+// computeCategoryPredictions' recurring branch.
+function computeRecurringTransferFlow(recurringTransfersList, accountId, monthNum, asSource) {
+  return recurringTransfersList
+    .filter(rt => rt.active)
+    .filter(rt => String(asSource ? rt.source_account_id : rt.dest_account_id) === String(accountId))
+    .filter(rt => {
+      const frequency = rt.frequency || 'Lunar';
+      return frequency !== 'Anual' || Number(rt.month_of_year) === monthNum;
+    })
+    .reduce((acc, rt) => acc + Number(asSource ? rt.source_amount : rt.dest_amount), 0);
+}
+
 function computeAccountProjection(account, monthsAhead, extra) {
   const accountTx = dash.transactions.filter(t => String(t.account_id) === String(account.id));
   const accountRecurring = dash.recurring.filter(r => String(r.account_id) === String(account.id));
@@ -2241,8 +2318,10 @@ function computeAccountProjection(account, monthsAhead, extra) {
     const probeMonthNum = Number(probe.split('-')[1]);
     const monthPredictions = computeCategoryPredictions(accountTx, accountRecurring, expenseCategories, probeMonthNum);
     const monthExpense = monthPredictions.reduce((acc, p) => acc + (p.amount || 0), 0);
+    const transferOut = computeRecurringTransferFlow(dash.recurringTransfers, account.id, probeMonthNum, true);
+    const transferIn = computeRecurringTransferFlow(dash.recurringTransfers, account.id, probeMonthNum, false);
     const extraApplies = !!extra && probe >= extra.startMonthKey;
-    const netMonthly = incomeBase - monthExpense - (extraApplies ? extra.amount : 0);
+    const netMonthly = incomeBase - monthExpense - transferOut + transferIn - (extraApplies ? extra.amount : 0);
     balance += netMonthly;
     months.push({ month: probe, balance, negative: balance < 0, predictions: monthPredictions });
   }
@@ -2500,26 +2579,51 @@ function renderTrajectorySection() {
 
 function renderPendingConfirmations() {
   const card = el('dashPendingCard');
-  const container = el('dashPendingList');
-  if (dash.pending.length === 0) {
+  const hasTx = dash.pending.length > 0;
+  const hasTr = dash.pendingTransfers.length > 0;
+  if (!hasTx && !hasTr) {
     card.classList.add('hidden');
-    container.innerHTML = '';
+    el('dashPendingList').innerHTML = '';
+    el('dashPendingTransferList').innerHTML = '';
     return;
   }
   card.classList.remove('hidden');
-  container.innerHTML = dash.pending.map(p => {
-    const account = dash.accounts.find(a => String(a.id) === String(p.account_id));
-    const subParts = [account ? account.name : ('cont #' + p.account_id), p.date];
-    if (p.description) subParts.splice(1, 0, p.description);
-    return `<div class="list-item" data-id="${p.id}">
-      <div class="list-item-title">${escapeHtml(p.category)}</div>
-      <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
-      <div class="pending-confirm-row">
-        <input type="number" min="0" step="0.01" class="pending-amount-input" value="${p.amount}">
-        <button type="button" class="pending-confirm-btn">Confirmă</button>
-      </div>
-    </div>`;
-  }).join('');
+
+  el('dashPendingTxSection').classList.toggle('hidden', !hasTx);
+  if (hasTx) {
+    el('dashPendingList').innerHTML = dash.pending.map(p => {
+      const account = dash.accounts.find(a => String(a.id) === String(p.account_id));
+      const subParts = [account ? account.name : ('cont #' + p.account_id), p.date];
+      if (p.description) subParts.splice(1, 0, p.description);
+      return `<div class="list-item" data-id="${p.id}">
+        <div class="list-item-title">${escapeHtml(p.category)}</div>
+        <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
+        <div class="pending-confirm-row">
+          <input type="number" min="0" step="0.01" class="pending-amount-input" value="${p.amount}">
+          <button type="button" class="pending-confirm-btn">Confirmă</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  el('dashPendingTrSection').classList.toggle('hidden', !hasTr);
+  if (hasTr) {
+    el('dashPendingTransferList').innerHTML = dash.pendingTransfers.map(tr => {
+      const srcAccount = dash.accounts.find(a => String(a.id) === String(tr.source_account_id));
+      const dstAccount = dash.accounts.find(a => String(a.id) === String(tr.dest_account_id));
+      const subParts = [tr.date];
+      if (tr.description) subParts.unshift(tr.description);
+      return `<div class="list-item" data-id="${tr.id}">
+        <div class="list-item-title">${escapeHtml(srcAccount ? srcAccount.name : '?')} → ${escapeHtml(dstAccount ? dstAccount.name : '?')}</div>
+        <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
+        <div class="pending-confirm-row">
+          <input type="number" min="0" step="0.01" class="pending-transfer-amount-input" data-role="source" value="${tr.source_amount}" placeholder="sumă sursă">
+          <input type="number" min="0" step="0.01" class="pending-transfer-amount-input" data-role="dest" value="${tr.dest_amount}" placeholder="sumă destinație">
+          <button type="button" class="pending-confirm-btn">Confirmă</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
 }
 
 el('dashPendingList').addEventListener('click', async (e) => {
@@ -2546,11 +2650,56 @@ el('dashPendingList').addEventListener('click', async (e) => {
     renderBalances();
     renderCategorySpend();
     renderPredictions();
-    updateDashboardBadge(dash.pending.length);
+    updateDashboardBadge(dash.pending.length + dash.pendingTransfers.length);
 
     const account = dash.accounts.find(a => String(a.id) === String(data.account_id));
     showGlobalBanner(
       `Confirmat! Sold ${account ? account.name : ''}: ${Number(data.balance).toFixed(2)} ${account ? account.currency : ''}`,
+      'success'
+    );
+  } catch (err) {
+    showGlobalBanner('Eroare la confirmare: ' + err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Confirmă';
+  }
+});
+
+el('dashPendingTransferList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.pending-confirm-btn');
+  if (!btn) return;
+  const item = btn.closest('.list-item');
+  const id = item.dataset.id;
+  const sourceInput = item.querySelector('.pending-transfer-amount-input[data-role="source"]');
+  const destInput = item.querySelector('.pending-transfer-amount-input[data-role="dest"]');
+  const sourceAmount = parseFloat(sourceInput.value);
+  const destAmount = parseFloat(destInput.value);
+  if (!(sourceAmount > 0) || !(destAmount > 0)) {
+    showGlobalBanner('Introdu sume valide.', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Se confirmă...';
+  try {
+    const data = await apiPost('confirmTransfer', { id, source_amount: sourceAmount, dest_amount: destAmount });
+    dash.pendingTransfers = dash.pendingTransfers.filter(t => String(t.id) !== String(id));
+    dash.transfers = dash.transfers.map(t => String(t.id) === String(id)
+      ? Object.assign({}, t, { source_amount: sourceAmount, dest_amount: destAmount, fx_rate: data.fx_rate })
+      : t);
+
+    renderPendingConfirmations();
+    renderTotalCompare();
+    renderBalances();
+    renderDashboardPeriodSections();
+    renderPredictions();
+    renderTrajectorySection();
+    updateDashboardBadge(dash.pending.length + dash.pendingTransfers.length);
+
+    const srcAcc = dash.accounts.find(a => String(a.id) === String(data.source_account.account_id));
+    const dstAcc = dash.accounts.find(a => String(a.id) === String(data.dest_account.account_id));
+    showGlobalBanner(
+      `Confirmat! Sold ${srcAcc ? srcAcc.name : ''}: ${Number(data.source_account.balance).toFixed(2)} ${srcAcc ? srcAcc.currency : ''} · ` +
+      `Sold ${dstAcc ? dstAcc.name : ''}: ${Number(data.dest_account.balance).toFixed(2)} ${dstAcc ? dstAcc.currency : ''}`,
       'success'
     );
   } catch (err) {
@@ -2577,8 +2726,11 @@ function updateDashboardBadge(count) {
 
 async function checkPendingBadge() {
   try {
-    const pending = await apiGet('getPendingConfirmations');
-    updateDashboardBadge(pending.length);
+    const [pending, pendingTransfers] = await Promise.all([
+      apiGet('getPendingConfirmations'),
+      apiGet('getPendingTransferConfirmations')
+    ]);
+    updateDashboardBadge(pending.length + pendingTransfers.length);
   } catch (err) {
     // Non-critical background check — a stale/missing badge isn't worth surfacing an error for.
   }
@@ -2602,6 +2754,9 @@ let settingsLoading = false;
 let editingRecurringId = null;
 let recFormType = 'Expense';
 let recFrequency = 'Lunar';
+let recurringTransfers = [];
+let editingRecurringTransferId = null;
+let recTrFrequency = 'Lunar';
 
 async function loadSettings(force) {
   if (settingsLoading) return;
@@ -2611,19 +2766,23 @@ async function loadSettings(force) {
   if (!settingsLoaded) el('settingsLoading').classList.remove('hidden');
 
   try {
-    const [recurringData, budgetsData, categoriesData, accountsData] = await Promise.all([
+    const [recurringData, recurringTransfersData, budgetsData, categoriesData, accountsData] = await Promise.all([
       apiGet('getRecurring'),
+      apiGet('getRecurringTransfers'),
       apiGet('getBudgets'),
       apiGet('getCategories'),
       apiGet('getAccounts')
     ]);
     recurringItems = recurringData;
+    recurringTransfers = recurringTransfersData;
     budgetItems = budgetsData;
     categories = categoriesData;
     accounts = accountsData;
     settingsLoaded = true;
     populateRecurringFormSelects();
+    populateRecurringTransferFormSelects();
     renderRecurringList();
+    renderRecurringTransferList();
     renderBudgetList();
     el('settingsContent').classList.remove('hidden');
   } catch (err) {
@@ -2813,6 +2972,175 @@ el('recurringForm').addEventListener('submit', async (e) => {
       showGlobalBanner('Recurența a fost adăugată.', 'success');
     }
     resetRecurringForm();
+    await loadSettings(true);
+  } catch (err) {
+    showGlobalBanner('Eroare: ' + err.message, 'error');
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+function populateRecurringTransferFormSelects() {
+  const optionsHtml = accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.currency})</option>`).join('');
+  el('recTrSourceAccount').innerHTML = optionsHtml;
+  el('recTrDestAccount').innerHTML = optionsHtml;
+  el('recTrMonthOfYear').innerHTML = ROMANIAN_MONTHS.map((name, i) => `<option value="${i + 1}">${name}</option>`).join('');
+}
+
+el('recTrFrequencyToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-frequency]');
+  if (!btn) return;
+  recTrFrequency = btn.dataset.frequency;
+  document.querySelectorAll('#recTrFrequencyToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  el('recTrMonthOfYearField').classList.toggle('hidden', recTrFrequency !== 'Anual');
+});
+
+function renderRecurringTransferList() {
+  const container = el('recurringTransferList');
+  if (recurringTransfers.length === 0) {
+    container.innerHTML = '<div class="empty-state">Niciun transfer recurent adăugat încă.</div>';
+    return;
+  }
+  const sorted = recurringTransfers.slice().sort((a, b) => Number(b.active) - Number(a.active) || Number(a.id) - Number(b.id));
+  container.innerHTML = sorted.map(rt => {
+    const srcAccount = accounts.find(a => String(a.id) === String(rt.source_account_id));
+    const dstAccount = accounts.find(a => String(a.id) === String(rt.dest_account_id));
+    const frequencyLabel = rt.frequency === 'Anual'
+      ? `Anual, ${ROMANIAN_MONTHS[Number(rt.month_of_year) - 1] || '?'}`
+      : 'Lunar';
+    const subParts = [frequencyLabel, 'ziua ' + rt.day_of_month];
+    if (!rt.active) subParts.push('inactiv');
+    return `<div class="list-item ${rt.active ? '' : 'inactive'}">
+      <div class="list-item-top">
+        <div>
+          <div class="list-item-title">${escapeHtml(srcAccount ? srcAccount.name : '?')} → ${escapeHtml(dstAccount ? dstAccount.name : '?')} · ${Number(rt.source_amount).toFixed(2)} ${srcAccount ? escapeHtml(srcAccount.currency) : ''}</div>
+          <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
+        </div>
+        <div class="list-item-actions">
+          <button type="button" class="icon-btn" data-edit="${rt.id}">Editează</button>
+          <label class="switch">
+            <input type="checkbox" data-toggle="${rt.id}" ${rt.active ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+el('recurringTransferList').addEventListener('click', (e) => {
+  const editBtn = e.target.closest('button[data-edit]');
+  if (editBtn) startEditRecurringTransfer(editBtn.dataset.edit);
+});
+
+el('recurringTransferList').addEventListener('change', (e) => {
+  const toggle = e.target.closest('input[data-toggle]');
+  if (toggle) toggleRecurringTransferActive(toggle.dataset.toggle, toggle.checked);
+});
+
+async function toggleRecurringTransferActive(id, active) {
+  const item = recurringTransfers.find(rt => String(rt.id) === String(id));
+  if (!item) return;
+  try {
+    await apiPost('updateRecurringTransfer', {
+      id: item.id, source_account_id: item.source_account_id, dest_account_id: item.dest_account_id,
+      source_amount: item.source_amount, dest_amount: item.dest_amount, day_of_month: item.day_of_month,
+      frequency: item.frequency, month_of_year: item.month_of_year, active
+    });
+    item.active = active;
+    renderRecurringTransferList();
+  } catch (err) {
+    showGlobalBanner('Eroare la actualizare: ' + err.message, 'error');
+    renderRecurringTransferList();
+  }
+}
+
+function startEditRecurringTransfer(id) {
+  const item = recurringTransfers.find(rt => String(rt.id) === String(id));
+  if (!item) return;
+  editingRecurringTransferId = item.id;
+  el('recTrSourceAccount').value = item.source_account_id;
+  el('recTrDestAccount').value = item.dest_account_id;
+  el('recTrSourceAmount').value = item.source_amount;
+  el('recTrDestAmount').value = item.dest_amount;
+  el('recTrDayOfMonth').value = item.day_of_month;
+  recTrFrequency = item.frequency || 'Lunar';
+  document.querySelectorAll('#recTrFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === recTrFrequency));
+  el('recTrMonthOfYearField').classList.toggle('hidden', recTrFrequency !== 'Anual');
+  el('recTrMonthOfYear').value = item.month_of_year || '1';
+  setFieldError('recTrSourceAmountError', false);
+  setFieldError('recTrDestAmountError', false);
+  setFieldError('recTrDayOfMonthError', false);
+  setFieldError('recTrAccountError', false);
+  el('recurringTransferFormTitle').textContent = 'Editează transferul recurent';
+  el('recTrSubmit').textContent = 'Salvează modificările';
+  el('recTrCancelEdit').classList.remove('hidden');
+  el('recurringTransferForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function resetRecurringTransferForm() {
+  editingRecurringTransferId = null;
+  el('recTrSourceAccount').value = accounts[0] ? accounts[0].id : '';
+  el('recTrDestAccount').value = accounts[1] ? accounts[1].id : (accounts[0] ? accounts[0].id : '');
+  el('recTrSourceAmount').value = '';
+  el('recTrDestAmount').value = '';
+  el('recTrDayOfMonth').value = '';
+  recTrFrequency = 'Lunar';
+  document.querySelectorAll('#recTrFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === 'Lunar'));
+  el('recTrMonthOfYearField').classList.add('hidden');
+  el('recTrMonthOfYear').value = '1';
+  setFieldError('recTrSourceAmountError', false);
+  setFieldError('recTrDestAmountError', false);
+  setFieldError('recTrDayOfMonthError', false);
+  setFieldError('recTrAccountError', false);
+  el('recurringTransferFormTitle').textContent = 'Adaugă transfer recurent';
+  el('recTrSubmit').textContent = 'Adaugă';
+  el('recTrCancelEdit').classList.add('hidden');
+}
+
+el('recTrCancelEdit').addEventListener('click', resetRecurringTransferForm);
+
+el('recurringTransferForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideGlobalBanner();
+
+  const sourceId = el('recTrSourceAccount').value;
+  const destId = el('recTrDestAccount').value;
+  const sourceAmount = parseFloat(el('recTrSourceAmount').value);
+  const destAmount = parseFloat(el('recTrDestAmount').value);
+  const dayOfMonth = parseInt(el('recTrDayOfMonth').value, 10);
+  const monthOfYear = recTrFrequency === 'Anual' ? parseInt(el('recTrMonthOfYear').value, 10) : '';
+
+  const accountsInvalid = !sourceId || !destId || sourceId === destId;
+  const sourceAmountInvalid = !(sourceAmount > 0);
+  const destAmountInvalid = !(destAmount > 0);
+  const dayInvalid = !(dayOfMonth >= 1 && dayOfMonth <= 28);
+  setFieldError('recTrAccountError', accountsInvalid);
+  setFieldError('recTrSourceAmountError', sourceAmountInvalid);
+  setFieldError('recTrDestAmountError', destAmountInvalid);
+  setFieldError('recTrDayOfMonthError', dayInvalid);
+  if (accountsInvalid || sourceAmountInvalid || destAmountInvalid || dayInvalid) return;
+
+  const submitBtn = el('recTrSubmit');
+  submitBtn.disabled = true;
+
+  try {
+    if (editingRecurringTransferId) {
+      const existing = recurringTransfers.find(rt => String(rt.id) === String(editingRecurringTransferId));
+      await apiPost('updateRecurringTransfer', {
+        id: editingRecurringTransferId, source_account_id: sourceId, dest_account_id: destId,
+        source_amount: sourceAmount, dest_amount: destAmount, day_of_month: dayOfMonth,
+        frequency: recTrFrequency, month_of_year: monthOfYear, active: existing ? existing.active : true
+      });
+      showGlobalBanner('Transferul recurent a fost actualizat.', 'success');
+    } else {
+      await apiPost('addRecurringTransfer', {
+        source_account_id: sourceId, dest_account_id: destId, source_amount: sourceAmount,
+        dest_amount: destAmount, day_of_month: dayOfMonth, frequency: recTrFrequency, month_of_year: monthOfYear
+      });
+      showGlobalBanner('Transferul recurent a fost adăugat.', 'success');
+    }
+    resetRecurringTransferForm();
     await loadSettings(true);
   } catch (err) {
     showGlobalBanner('Eroare: ' + err.message, 'error');

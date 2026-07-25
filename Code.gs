@@ -9,6 +9,7 @@ var SHEETS = {
   TRANSFERS: 'Transfers',
   CATEGORIES: 'Categories',
   RECURRING: 'Recurring',
+  RECURRING_TRANSFERS: 'RecurringTransfers',
   BUDGETS: 'Budgets'
 };
 
@@ -165,6 +166,40 @@ function setupRecurringFrequencyMigration() {
   }
 }
 
+// Creates the RecurringTransfers tab (mirrors Recurring's shape, minus the
+// type/category/description/account_id-single fields that don't apply to a transfer).
+// Safe to re-run — no-ops once the sheet already has a header row.
+function setupRecurringTransfersSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = getOrCreateSheet_(ss, SHEETS.RECURRING_TRANSFERS);
+  if (sheet.getLastRow() < 1) {
+    sheet.getRange(1, 1, 1, 10).setValues([[
+      'id', 'source_account_id', 'dest_account_id', 'source_amount', 'dest_amount',
+      'frequency', 'day_of_month', 'month_of_year', 'active', 'last_generated_period'
+    ]]);
+  }
+}
+
+// Adds recurring_transfer_id/confirmed to Transfers, mirroring the equivalent Transactions
+// migration exactly (columns land at 9/10 here since Transfers already has 8 base columns
+// vs. Transactions' 7). Existing rows default to confirmed = TRUE, since they were all
+// entered manually before this feature existed. Safe to re-run.
+function setupTransferConfirmationMigration() {
+  var sheet = getSheet_(SHEETS.TRANSFERS);
+  if (sheet.getRange(1, 9).getValue() !== 'recurring_transfer_id') {
+    sheet.getRange(1, 9).setValue('recurring_transfer_id');
+  }
+  if (sheet.getRange(1, 10).getValue() !== 'confirmed') {
+    sheet.getRange(1, 10).setValue('confirmed');
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      var confirmedDefaults = [];
+      for (var i = 0; i < lastRow - 1; i++) confirmedDefaults.push([true]);
+      sheet.getRange(2, 10, lastRow - 1, 1).setValues(confirmedDefaults);
+    }
+  }
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -295,7 +330,10 @@ function addTransfer(p) {
   try {
     var sheet = getSheet_(SHEETS.TRANSFERS);
     id = nextId_(sheet);
-    sheet.appendRow([id, new Date(p.date), Number(p.source_account_id), Number(p.dest_account_id), sourceAmount, destAmount, fxRate, p.description || '']);
+    sheet.appendRow([
+      id, new Date(p.date), Number(p.source_account_id), Number(p.dest_account_id), sourceAmount,
+      destAmount, fxRate, p.description || '', '', true
+    ]);
   } finally {
     lock.releaseLock();
   }
@@ -518,6 +556,88 @@ function updateRecurring(p) {
   return { id: Number(p.id) };
 }
 
+function getRecurringTransfers() {
+  var sheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, 10).getValues().map(function (row) {
+    return {
+      id: row[0],
+      source_account_id: row[1],
+      dest_account_id: row[2],
+      source_amount: row[3],
+      dest_amount: row[4],
+      frequency: row[5] || 'Lunar',
+      day_of_month: row[6],
+      month_of_year: row[7] || null,
+      active: row[8] === true || String(row[8]).toUpperCase() === 'TRUE',
+      last_generated_period: row[9]
+    };
+  });
+}
+
+function addRecurringTransfer(p) {
+  requireFields_(p, ['source_account_id', 'dest_account_id', 'source_amount', 'dest_amount', 'day_of_month', 'frequency']);
+  var sourceAmount = Number(p.source_amount);
+  var destAmount = Number(p.dest_amount);
+  if (!(sourceAmount > 0) || !(destAmount > 0)) throw new Error('source_amount and dest_amount must be positive numbers');
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
+  var frequency = validateFrequency_(p.frequency);
+  var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+  if (findRowIndexById_(accountsSheet, p.source_account_id) === -1) throw new Error('Unknown source_account_id: ' + p.source_account_id);
+  if (findRowIndexById_(accountsSheet, p.dest_account_id) === -1) throw new Error('Unknown dest_account_id: ' + p.dest_account_id);
+
+  var id;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+    id = nextId_(sheet);
+    sheet.appendRow([
+      id, Number(p.source_account_id), Number(p.dest_account_id), sourceAmount, destAmount,
+      frequency, dayOfMonth, monthOfYear, true, ''
+    ]);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: id };
+}
+
+// Deliberately leaves column 10 (last_generated_period) untouched, same reasoning as
+// updateRecurring: internal bookkeeping for generateRecurringTransfers_, not something an
+// edit should reset.
+function updateRecurringTransfer(p) {
+  requireFields_(p, ['id', 'source_account_id', 'dest_account_id', 'source_amount', 'dest_amount', 'day_of_month', 'frequency', 'active']);
+  var sourceAmount = Number(p.source_amount);
+  var destAmount = Number(p.dest_amount);
+  if (!(sourceAmount > 0) || !(destAmount > 0)) throw new Error('source_amount and dest_amount must be positive numbers');
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
+  var frequency = validateFrequency_(p.frequency);
+  var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+  if (findRowIndexById_(accountsSheet, p.source_account_id) === -1) throw new Error('Unknown source_account_id: ' + p.source_account_id);
+  if (findRowIndexById_(accountsSheet, p.dest_account_id) === -1) throw new Error('Unknown dest_account_id: ' + p.dest_account_id);
+  var active = (p.active === true || String(p.active).toUpperCase() === 'TRUE');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown recurring transfer id: ' + p.id);
+    sheet.getRange(rowIndex, 1, 1, 9).setValues([[
+      Number(p.id), Number(p.source_account_id), Number(p.dest_account_id), sourceAmount, destAmount,
+      frequency, dayOfMonth, monthOfYear, active
+    ]]);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: Number(p.id) };
+}
+
 var BUDGET_EXCLUDED_CATEGORIES_ = ['Corecții', 'Datorii/Împrumut'];
 
 function getBudgets() {
@@ -596,6 +716,57 @@ function confirmTransaction(p) {
   return { id: Number(p.id), account_id: Number(accountId), balance: getAccountBalance_(accountId) };
 }
 
+function getPendingTransferConfirmations() {
+  var sheet = getSheet_(SHEETS.TRANSFERS);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, 10).getValues()
+    .filter(function (row) { return row[9] === false || String(row[9]).toUpperCase() === 'FALSE'; })
+    .map(function (row) {
+      return {
+        id: row[0],
+        date: formatDate_(row[1]),
+        source_account_id: row[2],
+        dest_account_id: row[3],
+        source_amount: row[4],
+        dest_amount: row[5],
+        fx_rate: row[6],
+        description: row[7],
+        recurring_transfer_id: row[8]
+      };
+    });
+}
+
+function confirmTransfer(p) {
+  requireFields_(p, ['id', 'source_amount', 'dest_amount']);
+  var sourceAmount = Number(p.source_amount);
+  var destAmount = Number(p.dest_amount);
+  if (!(sourceAmount > 0) || !(destAmount > 0)) throw new Error('source_amount and dest_amount must be positive numbers');
+  var fxRate = destAmount / sourceAmount;
+
+  var sourceAccountId, destAccountId;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.TRANSFERS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown transfer id: ' + p.id);
+    sourceAccountId = sheet.getRange(rowIndex, 3).getValue();
+    destAccountId = sheet.getRange(rowIndex, 4).getValue();
+    sheet.getRange(rowIndex, 5, 1, 3).setValues([[sourceAmount, destAmount, fxRate]]);
+    sheet.getRange(rowIndex, 10).setValue(true);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return {
+    id: Number(p.id),
+    fx_rate: fxRate,
+    source_account: { account_id: Number(sourceAccountId), balance: getAccountBalance_(sourceAccountId) },
+    dest_account: { account_id: Number(destAccountId), balance: getAccountBalance_(destAccountId) }
+  };
+}
+
 // Deliberately preserves column 8 (recurring_id) — editing a transaction shouldn't sever its
 // link back to the Recurring row that generated it. Editing always implies confirmed = TRUE.
 function updateTransaction(p) {
@@ -662,6 +833,7 @@ function updateTransfer(p) {
       Number(p.id), new Date(p.date), Number(p.source_account_id), Number(p.dest_account_id),
       sourceAmount, destAmount, fxRate, p.description || ''
     ]]);
+    sheet.getRange(rowIndex, 10).setValue(true);
   } finally {
     lock.releaseLock();
   }
@@ -757,6 +929,72 @@ function generateRecurringTransactions() {
     lock.releaseLock();
   }
 
+  // Recurring transfers ride the same daily trigger as this function — no separate
+  // trigger to configure — since Apps Script time-driven triggers call one function each.
+  var transfersResult = generateRecurringTransfers();
+
+  return { generated: generated, transfersGenerated: transfersResult.generated };
+}
+
+// Mirrors generateRecurringTransactions' Lunar/Anual gating exactly, but appends to
+// Transfers instead of Transactions. Called from generateRecurringTransactions() above so
+// both run under the one existing daily trigger; also safe to run directly (e.g. to test
+// transfer generation in isolation from the Apps Script editor).
+function generateRecurringTransfers() {
+  var today = new Date();
+  var currentDay = today.getDate();
+  var currentMonthNum = today.getMonth() + 1;
+  var currentMonthKey = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM');
+  var currentYearKey = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy');
+
+  var recurringSheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+  var lastRow = recurringSheet.getLastRow();
+  if (lastRow < 2) return { generated: 0 };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var generated = 0;
+  try {
+    var rows = recurringSheet.getRange(2, 1, lastRow - 1, 10).getValues();
+    var trSheet = getSheet_(SHEETS.TRANSFERS);
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var active = row[8] === true || String(row[8]).toUpperCase() === 'TRUE';
+      if (!active) continue;
+
+      var dayOfMonth = Number(row[6]);
+      var lastGeneratedPeriod = row[9];
+      var frequency = row[5] || 'Lunar';
+      var monthOfYear = row[7];
+
+      var periodKey;
+      if (frequency === 'Anual') {
+        if (currentMonthNum !== Number(monthOfYear)) continue;
+        if (currentDay < dayOfMonth) continue;
+        if (lastGeneratedPeriod === currentYearKey) continue;
+        periodKey = currentYearKey;
+      } else {
+        if (currentDay < dayOfMonth) continue;
+        if (lastGeneratedPeriod === currentMonthKey) continue;
+        periodKey = currentMonthKey;
+      }
+
+      var recurringTransferId = row[0], sourceAccountId = row[1], destAccountId = row[2],
+        sourceAmount = row[3], destAmount = row[4];
+      var fxRate = Number(destAmount) / Number(sourceAmount);
+      var newId = nextId_(trSheet);
+      trSheet.appendRow([
+        newId, today, Number(sourceAccountId), Number(destAccountId), Number(sourceAmount),
+        Number(destAmount), fxRate, '', Number(recurringTransferId), false
+      ]);
+      recurringSheet.getRange(2 + i, 10).setValue(periodKey);
+      generated++;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
   return { generated: generated };
 }
 
@@ -786,7 +1024,12 @@ var ACTIONS_ = {
   updateTransaction: updateTransaction,
   deleteTransaction: deleteTransaction,
   updateTransfer: updateTransfer,
-  deleteTransfer: deleteTransfer
+  deleteTransfer: deleteTransfer,
+  getRecurringTransfers: getRecurringTransfers,
+  addRecurringTransfer: addRecurringTransfer,
+  updateRecurringTransfer: updateRecurringTransfer,
+  confirmTransfer: confirmTransfer,
+  getPendingTransferConfirmations: getPendingTransferConfirmations
 };
 
 function doGet(e) { return handleRequest_(e); }
