@@ -305,7 +305,7 @@
   /* ===== App-level tabs (Adaugă / Dashboard / Setări) ===== */
   .app-nav { margin-bottom: 16px; }
 
-  .app-nav button { position: relative; font-size: 0.85rem; padding: 10px 4px; }
+  .app-nav button { position: relative; font-size: 0.74rem; padding: 9px 2px; line-height: 1.2; }
 
   /* ===== Period selector (Dashboard + Istoric) ===== */
   .period-custom { display: flex; gap: 8px; margin-top: 8px; }
@@ -357,6 +357,16 @@
 
   .hist-amount-income { color: var(--income); }
   .hist-amount-expense { color: var(--expense); }
+
+  /* ===== Traiectorie / Simulator: simple comparison tables ===== */
+  .table-scroll { overflow-x: auto; margin-top: 8px; }
+
+  .sim-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; white-space: nowrap; }
+  .sim-table th, .sim-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  .sim-table th:first-child, .sim-table td:first-child { text-align: left; }
+  .sim-table th { color: var(--muted); font-weight: 600; }
+
+  .sim-negative { color: var(--expense); font-weight: 700; }
 
   .nav-badge {
     position: absolute;
@@ -565,6 +575,7 @@
     <button type="button" data-tab="add" class="active">Adaugă</button>
     <button type="button" data-tab="dashboard">Dashboard</button>
     <button type="button" data-tab="history">Istoric</button>
+    <button type="button" data-tab="simulator">Simulator</button>
     <button type="button" data-tab="settings">Setări</button>
   </div>
 
@@ -718,6 +729,13 @@
         <div class="section-title">Predicție pe categorie<span class="period-lock-badge">mereu luna curentă</span></div>
         <div id="dashPredictions"></div>
       </div>
+
+      <div class="card">
+        <div class="section-title">Traiectorie estimată — următoarele 6 luni</div>
+        <div class="table-scroll"><table class="sim-table" id="dashTrajectoryTable"></table></div>
+        <div id="dashTrajectoryOverBudget"></div>
+        <div id="dashTrajectoryInvestments"></div>
+      </div>
     </div>
   </div>
 
@@ -837,6 +855,52 @@
         <div id="histTrList"></div>
         <div class="hist-total" id="histTrTotal"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Simulator ===== -->
+  <div id="tab-simulator" class="tab-panel hidden">
+    <div id="simLoading" class="status-loading">Se încarcă datele...</div>
+
+    <div id="simFormContent" class="hidden">
+      <div class="card">
+        <div class="section-title">Simulator „ce-ar fi dacă"</div>
+        <div class="hint" style="margin-bottom:12px;">Calculator vizual — nu salvează nimic, scenariul dispare la reîncărcarea paginii.</div>
+
+        <div class="segmented" id="simModeToggle">
+          <button type="button" data-mode="onetime" class="active">Cheltuială unică</button>
+          <button type="button" data-mode="recurring">Cheltuială lunară nouă</button>
+        </div>
+
+        <label for="simDescription">Descriere</label>
+        <input type="text" id="simDescription" placeholder="ex: Laptop nou">
+
+        <label for="simCategory">Categorie</label>
+        <select id="simCategory"><option value="">-- alege categoria --</option></select>
+
+        <label for="simAccount">Cont din care s-ar plăti</label>
+        <select id="simAccount"></select>
+        <div class="hint hidden" id="simAccountLockHint">Contul e blocat automat pentru această categorie.</div>
+
+        <label for="simAmount">Sumă</label>
+        <input type="number" id="simAmount" min="0" step="0.01" placeholder="0.00">
+        <div class="field-error" id="simAmountError">Introdu o sumă pozitivă.</div>
+
+        <div id="simOnetimeFields">
+          <label for="simTargetDate">Dată țintă</label>
+          <input type="date" id="simTargetDate">
+        </div>
+
+        <div id="simRecurringFields" class="hidden">
+          <label for="simStartMonth">Lună de start</label>
+          <input type="month" id="simStartMonth">
+        </div>
+
+        <button type="button" class="submit-btn" id="simRunBtn">Calculează</button>
+      </div>
+
+      <div id="simError" class="banner error"></div>
+      <div id="simResults" class="hidden"></div>
     </div>
   </div>
 
@@ -1801,10 +1865,12 @@ function switchTab(tab) {
   el('tab-add').classList.toggle('hidden', tab !== 'add');
   el('tab-dashboard').classList.toggle('hidden', tab !== 'dashboard');
   el('tab-history').classList.toggle('hidden', tab !== 'history');
+  el('tab-simulator').classList.toggle('hidden', tab !== 'simulator');
   el('tab-settings').classList.toggle('hidden', tab !== 'settings');
   hideGlobalBanner();
   if (tab === 'dashboard') loadDashboard(false);
   if (tab === 'history' && !histLoaded) loadHistData(false);
+  if (tab === 'simulator') ensureDashDataForSimulator();
   if (tab === 'settings') loadSettings(false);
 }
 
@@ -1953,16 +2019,17 @@ function getBudgetLimitLei(category, incomeBase) {
 // Prediction per Expense category: active Recurring items win; otherwise the monthly
 // average of real spend over however many of the last 3-6 months actually have history
 // (new categories/users with less history get a smaller, still-honest window).
-function computePredictions() {
+// Parameterized so it can be reused unmodified for a single account's own transactions/
+// recurring items (the projection engine) as well as the pooled all-accounts view below.
+function computeCategoryPredictions(transactionsList, recurringList, expenseCategoryNames) {
   const cm = currentMonthKey();
-  const expenseCategories = categories.filter(c => c.type === 'Expense').map(c => c.name);
 
   const activeRecurringByCategory = new Map();
-  dash.recurring.filter(r => r.active && r.type === 'Expense').forEach(r => {
+  recurringList.filter(r => r.active && r.type === 'Expense').forEach(r => {
     activeRecurringByCategory.set(r.category, (activeRecurringByCategory.get(r.category) || 0) + Number(r.amount));
   });
 
-  const pastExpenseTx = dash.transactions.filter(t => t.type === 'Expense' && monthKey(t.date) !== cm);
+  const pastExpenseTx = transactionsList.filter(t => t.type === 'Expense' && monthKey(t.date) !== cm);
   const earliestMonth = pastExpenseTx.length
     ? pastExpenseTx.map(t => monthKey(t.date)).sort()[0]
     : null;
@@ -1977,7 +2044,7 @@ function computePredictions() {
     }
   }
 
-  return expenseCategories.map(category => {
+  return expenseCategoryNames.map(category => {
     if (activeRecurringByCategory.has(category)) {
       return { category, amount: activeRecurringByCategory.get(category), source: 'recurring' };
     }
@@ -1992,6 +2059,11 @@ function computePredictions() {
     }
     return { category, amount: sum / windowMonths.length, source: 'average' };
   });
+}
+
+function computePredictions() {
+  const expenseCategories = categories.filter(c => c.type === 'Expense').map(c => c.name);
+  return computeCategoryPredictions(dash.transactions, dash.recurring, expenseCategories);
 }
 
 function renderTotalCompare() {
@@ -2074,6 +2146,106 @@ function computePeriodInvestments(from, to) {
     .filter(tr => investmentAccountIds.includes(String(tr.dest_account_id)))
     .filter(tr => tr.date >= from && tr.date <= to)
     .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+}
+
+// Same windowed-average shape as computeCategoryPredictions' historical-average branch,
+// applied to transfers into the investment accounts instead of expense transactions.
+function computeRecentInvestmentMonthlyAverage() {
+  const cm = currentMonthKey();
+  const investmentAccountIds = getInvestmentAccountIds(dash.accounts);
+  const pastTransfers = dash.transfers.filter(tr =>
+    investmentAccountIds.includes(String(tr.dest_account_id)) && monthKey(tr.date) !== cm);
+  if (pastTransfers.length === 0) return null;
+
+  const earliestMonth = pastTransfers.map(tr => monthKey(tr.date)).sort()[0];
+  const windowMonths = [];
+  let probe = cm;
+  while (windowMonths.length < 6) {
+    probe = addMonths(probe, -1);
+    if (probe < earliestMonth) break;
+    windowMonths.push(probe);
+  }
+  if (windowMonths.length === 0) return null;
+
+  const sum = pastTransfers
+    .filter(tr => windowMonths.includes(monthKey(tr.date)))
+    .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+  return sum / windowMonths.length;
+}
+
+const PROJECTION_MONTHS_DEFAULT = 6;
+
+// Projects one account's balance forward `monthsAhead` months at a constant net monthly
+// rate (that account's own estimated income minus its own estimated expenses — both reuse
+// the exact same primitives as the pooled Dashboard figures, just scoped to this account's
+// transactions/recurring items). `extra`, when given, layers a hypothetical recurring
+// expense ({amount, startMonthKey}) into every projected month from startMonthKey onward —
+// used by the Simulator's "cheltuială lunară nouă" scenario; omit it for the plain trajectory.
+function computeAccountProjection(account, monthsAhead, extra) {
+  const accountTx = dash.transactions.filter(t => String(t.account_id) === String(account.id));
+  const accountRecurring = dash.recurring.filter(r => String(r.account_id) === String(account.id));
+  const expenseCategories = categories.filter(c => c.type === 'Expense').map(c => c.name);
+
+  const incomeBase = computeMonthIncomeBase(accountTx, currentMonthKey());
+  const predictions = computeCategoryPredictions(accountTx, accountRecurring, expenseCategories);
+  const totalExpense = predictions.reduce((acc, p) => acc + (p.amount || 0), 0);
+  const baseNetMonthly = incomeBase - totalExpense;
+
+  const startingBalance = computeBalances().get(String(account.id)) || 0;
+  const months = [];
+  let balance = startingBalance;
+  let probe = currentMonthKey();
+  for (let i = 1; i <= monthsAhead; i++) {
+    probe = addMonths(probe, 1);
+    const extraApplies = !!extra && probe >= extra.startMonthKey;
+    const netMonthly = baseNetMonthly - (extraApplies ? extra.amount : 0);
+    balance += netMonthly;
+    months.push({ month: probe, balance, negative: balance < 0 });
+  }
+  return { account, startingBalance, netMonthly: baseNetMonthly, incomeBase, predictions, months };
+}
+
+// Would adding `extraMonthlyAmount` to `category`'s monthly spend push it over its budget
+// target? Uses the pooled (all-accounts) income base and prediction, matching how budget
+// targets are defined everywhere else — null when the category has no target at all.
+function checkSimulatedBudgetImpact(category, extraMonthlyAmount) {
+  const incomeBase = computeIncomeBase(dash.transactions);
+  const limit = getBudgetLimitLei(category, incomeBase);
+  if (limit === null) return null;
+
+  const existing = computePredictions().find(p => p.category === category);
+  const currentEstimate = existing && existing.amount !== null ? existing.amount : 0;
+  const newEstimate = currentEstimate + extraMonthlyAmount;
+  return { limit, currentEstimate, newEstimate, wasOver: currentEstimate > limit, willBeOver: newEstimate > limit };
+}
+
+// Bundles everything the "Traiectorie estimată" Dashboard card needs: per-account balance
+// projections, which categories would exceed their target at the (constant) estimated
+// income, and the investment target vs. the recent actual transfer run-rate.
+function computeTrajectory(monthsAhead) {
+  const incomeBase = computeIncomeBase(dash.transactions);
+  const predictions = computePredictions();
+  const budgetsByCategory = new Map(dash.budgets.map(b => [b.category, Number(b.percent)]));
+
+  const categoryProjection = predictions.map(p => {
+    const percent = budgetsByCategory.get(p.category);
+    const limit = (percent !== undefined && incomeBase > 0) ? budgetLimitInLei(percent, incomeBase) : null;
+    const over = p.amount !== null && limit !== null && p.amount > limit;
+    return { category: p.category, amount: p.amount, limit, over, source: p.source };
+  });
+
+  const investmentPercent = budgetsByCategory.get(INVESTMENT_BUDGET_CATEGORY);
+  const investmentTarget = (investmentPercent !== undefined && incomeBase > 0)
+    ? budgetLimitInLei(investmentPercent, incomeBase) : null;
+  const investmentRecentAvg = computeRecentInvestmentMonthlyAverage();
+
+  const accountProjections = dash.accounts.map(account => computeAccountProjection(account, monthsAhead));
+
+  const monthKeys = [];
+  let probe = currentMonthKey();
+  for (let i = 1; i <= monthsAhead; i++) { probe = addMonths(probe, 1); monthKeys.push(probe); }
+
+  return { incomeBase, categoryProjection, investmentTarget, investmentRecentAvg, accountProjections, monthKeys };
 }
 
 function renderInvestmentSection() {
@@ -2159,6 +2331,11 @@ function formatMonthLabel(ym) {
   return new Date(y, m - 1, 1).toLocaleDateString('ro-RO', { month: 'short', year: '2-digit' });
 }
 
+function formatDateLabel(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('ro-RO', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 let dashTrendChartInstance = null;
 function renderTrendChart() {
   if (typeof Chart === 'undefined') return;
@@ -2236,6 +2413,43 @@ function renderPredictions() {
       <span class="predict-values">${valuesHtml}</span>
     </div>`;
   }).join('');
+}
+
+function renderTrajectorySection() {
+  const trajectory = computeTrajectory(PROJECTION_MONTHS_DEFAULT);
+
+  const headerRow = '<tr><th>Lună</th>' +
+    trajectory.accountProjections.map(ap => `<th>${escapeHtml(ap.account.name)}</th>`).join('') + '</tr>';
+  const bodyRows = trajectory.monthKeys.map((mk, i) => {
+    const cells = trajectory.accountProjections.map(ap => {
+      const m = ap.months[i];
+      return `<td class="${m.negative ? 'sim-negative' : ''}">${m.balance.toFixed(2)}</td>`;
+    }).join('');
+    return `<tr><td>${formatMonthLabel(mk)}</td>${cells}</tr>`;
+  }).join('');
+  el('dashTrajectoryTable').innerHTML = headerRow + bodyRows;
+
+  const overCategories = trajectory.categoryProjection.filter(c => c.over);
+  el('dashTrajectoryOverBudget').innerHTML = overCategories.length === 0 ? '' :
+    '<div class="section-title" style="font-size:0.9rem; margin-top:14px;">Categorii ce ar depăși ținta</div>' +
+    overCategories.map(c => `<div class="predict-row">
+      <span class="predict-cat">${escapeHtml(c.category)}</span>
+      <span class="predict-values"><span class="predict-over">${c.amount.toFixed(2)} / țintă ${c.limit.toFixed(2)}</span></span>
+    </div>`).join('');
+
+  const investEl = el('dashTrajectoryInvestments');
+  if (trajectory.investmentTarget === null) {
+    investEl.innerHTML = '';
+  } else {
+    const recent = trajectory.investmentRecentAvg;
+    const recentText = recent !== null ? recent.toFixed(2) : 'date insuficiente';
+    const met = recent !== null && recent >= trajectory.investmentTarget;
+    investEl.innerHTML = `<div class="section-title" style="font-size:0.9rem; margin-top:14px;">Investiții</div>
+      <div class="predict-row">
+        <span class="predict-cat">Medie recentă vs. țintă lunară</span>
+        <span class="predict-values"><span class="${met ? '' : 'predict-over'}">${recentText} / ${trajectory.investmentTarget.toFixed(2)} lei</span></span>
+      </div>`;
+  }
 }
 
 function renderPendingConfirmations() {
@@ -2331,6 +2545,7 @@ function renderDashboard() {
   renderBalances();
   renderDashboardPeriodSections();
   renderPredictions();
+  renderTrajectorySection();
 }
 
 // ================= SETĂRI =================
@@ -2946,6 +3161,174 @@ async function deleteHistTr(id) {
     showGlobalBanner('Eroare la ștergere: ' + err.message, 'error');
   }
 }
+
+// ================= SIMULATOR =================
+let simMode = 'onetime';
+
+function showSimError(message) {
+  const banner = el('simError');
+  banner.textContent = message;
+  banner.classList.add('show');
+}
+
+function hideSimError() {
+  el('simError').classList.remove('show');
+}
+
+// Reuses Dashboard's own loader/cache — if Dashboard was already visited this resolves
+// instantly with no extra fetch; if not, it fetches the same data the trajectory needs.
+async function ensureDashDataForSimulator() {
+  el('simLoading').classList.remove('hidden');
+  el('simFormContent').classList.add('hidden');
+  hideSimError();
+
+  await loadDashboard(false);
+
+  if (!dashboardLoaded) {
+    showSimError('Nu s-au putut încărca datele necesare pentru simulare.');
+    el('simLoading').classList.add('hidden');
+    return;
+  }
+  populateSimulatorForm();
+  el('simLoading').classList.add('hidden');
+  el('simFormContent').classList.remove('hidden');
+}
+
+function populateSimulatorForm() {
+  el('simCategory').innerHTML = '<option value="">-- alege categoria --</option>' +
+    categories.filter(c => c.type === 'Expense').map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+  el('simAccount').innerHTML = dash.accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.currency})</option>`).join('');
+  updateSimAccountLock();
+
+  el('simTargetDate').min = todayStr();
+  el('simTargetDate').value = '';
+
+  const nextMonth = addMonths(currentMonthKey(), 1);
+  const maxMonth = addMonths(currentMonthKey(), PROJECTION_MONTHS_DEFAULT);
+  el('simStartMonth').min = nextMonth;
+  el('simStartMonth').max = maxMonth;
+  el('simStartMonth').value = nextMonth;
+
+  el('simResults').classList.add('hidden');
+  el('simResults').innerHTML = '';
+}
+
+function updateSimAccountLock() {
+  const category = categories.find(c => c.name === el('simCategory').value);
+  const accountSelect = el('simAccount');
+  const restrictedId = category ? category.restricted_account_id : null;
+  if (restrictedId) {
+    accountSelect.value = String(restrictedId);
+    accountSelect.disabled = true;
+    el('simAccountLockHint').classList.remove('hidden');
+  } else {
+    accountSelect.disabled = false;
+    el('simAccountLockHint').classList.add('hidden');
+  }
+}
+
+el('simCategory').addEventListener('change', updateSimAccountLock);
+
+el('simModeToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-mode]');
+  if (!btn) return;
+  simMode = btn.dataset.mode;
+  document.querySelectorAll('#simModeToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  el('simOnetimeFields').classList.toggle('hidden', simMode !== 'onetime');
+  el('simRecurringFields').classList.toggle('hidden', simMode !== 'recurring');
+  el('simResults').classList.add('hidden');
+});
+
+function renderSimulatorOnetimeResult(account, category, amount, targetDate) {
+  const targetMonth = monthKey(targetDate);
+  const cm = currentMonthKey();
+  const monthsAhead = Math.max(0, countMonthsInPeriod(cm, targetMonth) - 1);
+  const projection = computeAccountProjection(account, monthsAhead);
+  const projectedBalance = monthsAhead === 0 ? projection.startingBalance : projection.months[monthsAhead - 1].balance;
+  const shortfall = amount - projectedBalance;
+
+  let resultHtml = `<div class="card">
+    <div class="section-title">Rezultat</div>
+    <div class="predict-row"><span class="predict-cat">Sold estimat — ${escapeHtml(account.name)}, ${formatDateLabel(targetDate)}</span><span class="predict-values">${projectedBalance.toFixed(2)} ${account.currency}</span></div>
+    <div class="predict-row"><span class="predict-cat">Sumă necesară (${escapeHtml(category)})</span><span class="predict-values">${amount.toFixed(2)} ${account.currency}</span></div>`;
+
+  if (shortfall <= 0) {
+    resultHtml += `<div class="banner success show" style="margin-top:12px;">Suficient — după cheltuială ar rămâne ${(-shortfall).toFixed(2)} ${account.currency}.</div>`;
+  } else {
+    const extra = monthsAhead > 0 ? shortfall / monthsAhead : null;
+    resultHtml += `<div class="banner warning show" style="margin-top:12px;">Insuficient — lipsesc ${shortfall.toFixed(2)} ${account.currency}.${extra !== null ? ` Ar trebui economisit suplimentar ${extra.toFixed(2)} ${account.currency}/lună până atunci.` : ' Data țintă e prea aproape pentru a calcula o economie lunară.'}</div>`;
+  }
+  resultHtml += `</div>`;
+
+  el('simResults').innerHTML = resultHtml;
+  el('simResults').classList.remove('hidden');
+}
+
+function renderSimulatorRecurringResult(account, category, amount, startMonth) {
+  const plain = computeAccountProjection(account, PROJECTION_MONTHS_DEFAULT);
+  const withExtra = computeAccountProjection(account, PROJECTION_MONTHS_DEFAULT, { amount, startMonthKey: startMonth });
+
+  const rows = withExtra.months.map((m, i) => {
+    const p = plain.months[i];
+    return `<tr>
+      <td>${formatMonthLabel(m.month)}</td>
+      <td>${p.balance.toFixed(2)}</td>
+      <td class="${m.negative ? 'sim-negative' : ''}">${m.balance.toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+
+  const impact = checkSimulatedBudgetImpact(category, amount);
+  let impactHtml = '';
+  if (impact) {
+    impactHtml = `<div class="predict-row">
+      <span class="predict-cat">Impact asupra țintei „${escapeHtml(category)}”</span>
+      <span class="predict-values"><span class="${impact.willBeOver ? 'predict-over' : ''}">${impact.currentEstimate.toFixed(2)} → ${impact.newEstimate.toFixed(2)} / țintă ${impact.limit.toFixed(2)}</span></span>
+    </div>`;
+    if (impact.willBeOver && !impact.wasOver) {
+      impactHtml += `<div class="banner warning show" style="margin-top:8px;">Cheltuiala nouă ar duce categoria „${escapeHtml(category)}” peste ținta de buget.</div>`;
+    } else if (impact.willBeOver) {
+      impactHtml += `<div class="banner warning show" style="margin-top:8px;">Categoria „${escapeHtml(category)}” e deja peste țintă și ar rămâne peste țintă.</div>`;
+    }
+  }
+
+  const anyNegative = withExtra.months.some(m => m.negative);
+
+  el('simResults').innerHTML = `<div class="card">
+    <div class="section-title">Traiectorie comparativă — ${escapeHtml(account.name)}</div>
+    <div class="table-scroll"><table class="sim-table">
+      <tr><th>Lună</th><th>Fără cheltuiala nouă</th><th>Cu cheltuiala nouă</th></tr>
+      ${rows}
+    </table></div>
+    ${anyNegative ? '<div class="banner warning show" style="margin-top:12px;">Soldul ar deveni negativ în cel puțin o lună (marcat cu roșu în tabel).</div>' : ''}
+    ${impactHtml}
+  </div>`;
+  el('simResults').classList.remove('hidden');
+}
+
+el('simRunBtn').addEventListener('click', () => {
+  hideSimError();
+
+  const category = el('simCategory').value;
+  const accountId = el('simAccount').value;
+  const amount = parseFloat(el('simAmount').value);
+  const amountInvalid = !(amount > 0);
+  setFieldError('simAmountError', amountInvalid);
+  if (!category) { showSimError('Alege o categorie.'); return; }
+  if (amountInvalid) return;
+
+  const account = dash.accounts.find(a => String(a.id) === String(accountId));
+  if (!account) { showSimError('Alege un cont.'); return; }
+
+  if (simMode === 'onetime') {
+    const targetDate = el('simTargetDate').value;
+    if (!targetDate) { showSimError('Alege o dată țintă.'); return; }
+    renderSimulatorOnetimeResult(account, category, amount, targetDate);
+  } else {
+    const startMonth = el('simStartMonth').value;
+    if (!startMonth) { showSimError('Alege o lună de start.'); return; }
+    renderSimulatorRecurringResult(account, category, amount, startMonth);
+  }
+});
 
 init();
 loadTransactionHistory();
