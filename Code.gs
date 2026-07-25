@@ -103,6 +103,22 @@ function setupPhase4bSheets() {
   }
 }
 
+// Budgets.monthly_limit (lei) becomes Budgets.percent (0-100, % of income). Old monetary
+// values aren't valid percentages, so this clears existing budget rows' values once during
+// the rename — re-enter targets as percentages from Setări afterwards. Safe to re-run: it
+// no-ops once the header already reads 'percent'.
+function setupBudgetPercentMigration() {
+  var sheet = getSheet_(SHEETS.BUDGETS);
+  if (sheet.getRange(1, 2).getValue() === 'percent') return;
+  sheet.getRange(1, 2).setValue('percent');
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    var blanks = [];
+    for (var i = 0; i < lastRow - 1; i++) blanks.push(['']);
+    sheet.getRange(2, 2, lastRow - 1, 1).setValues(blanks);
+  }
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -429,19 +445,24 @@ function updateRecurring(p) {
   return { id: Number(p.id) };
 }
 
+var BUDGET_EXCLUDED_CATEGORIES_ = ['Corecții', 'Datorii/Împrumut'];
+
 function getBudgets() {
   var sheet = getSheet_(SHEETS.BUDGETS);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
   return sheet.getRange(2, 1, lastRow - 1, 2).getValues()
     .filter(function (row) { return row[0] !== ''; })
-    .map(function (row) { return { category: row[0], monthly_limit: row[1] }; });
+    .map(function (row) { return { category: row[0], percent: row[1] }; });
 }
 
 function setBudget(p) {
-  requireFields_(p, ['category', 'monthly_limit']);
-  var limit = Number(p.monthly_limit);
-  if (!(limit >= 0)) throw new Error('monthly_limit must be a non-negative number');
+  requireFields_(p, ['category', 'percent']);
+  if (BUDGET_EXCLUDED_CATEGORIES_.indexOf(p.category) !== -1) {
+    throw new Error('Category cannot have a budget target: ' + p.category);
+  }
+  var percent = Number(p.percent);
+  if (!(percent >= 0 && percent <= 100)) throw new Error('percent must be a number between 0 and 100');
 
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -449,15 +470,15 @@ function setBudget(p) {
     var sheet = getSheet_(SHEETS.BUDGETS);
     var rowIndex = findRowIndexById_(sheet, p.category);
     if (rowIndex === -1) {
-      sheet.appendRow([p.category, limit]);
+      sheet.appendRow([p.category, percent]);
     } else {
-      sheet.getRange(rowIndex, 2).setValue(limit);
+      sheet.getRange(rowIndex, 2).setValue(percent);
     }
   } finally {
     lock.releaseLock();
   }
 
-  return { category: p.category, monthly_limit: limit };
+  return { category: p.category, percent: percent };
 }
 
 function getPendingConfirmations() {
