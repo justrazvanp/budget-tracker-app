@@ -895,9 +895,14 @@ function computeQuickPeriod(type) {
 // like the 31st, which silently breaks "last day of month" when shifting across months.
 function addMonthsClamped(dateStr, delta) {
   const [y, m, d] = dateStr.split('-').map(Number);
+  // Track *that* this was the last day of its month, not just the day number — otherwise a
+  // 31st clamped down to a 30th (e.g. Oct 31 -> Nov 30) "forgets" it was month-end, and the
+  // next shift clamps against the wrong baseline (Nov 30 -> Dec 30 instead of Dec 31).
+  const isLastDayOfMonth = d === new Date(y, m, 0).getDate();
   const targetMonthIndex = m - 1 + delta;
   const daysInTargetMonth = new Date(y, targetMonthIndex + 1, 0).getDate();
-  return ymd(new Date(y, targetMonthIndex, Math.min(d, daysInTargetMonth)));
+  const targetDay = isLastDayOfMonth ? daysInTargetMonth : Math.min(d, daysInTargetMonth);
+  return ymd(new Date(y, targetMonthIndex, targetDay));
 }
 
 function shiftPeriodByMonths(from, to, delta) {
