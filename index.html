@@ -705,6 +705,11 @@
       </div>
 
       <div class="card">
+        <div class="section-title">Investiții</div>
+        <div id="dashInvestments"></div>
+      </div>
+
+      <div class="card">
         <div class="section-title">Evoluție lunară (venituri vs. cheltuieli)</div>
         <div class="chart-wrap"><canvas id="dashTrendChart"></canvas></div>
       </div>
@@ -909,6 +914,9 @@ const TRANSACTION_HISTORY_LIMIT = 200;
 const QUICK_CATEGORY_LIMIT = 4;
 const DESCRIPTION_SUGGESTION_LIMIT = 8;
 const BUDGET_EXCLUDED_CATEGORIES = ['Corecții', 'Datorii/Împrumut'];
+// Reserved Budgets.category value — not a real Expense category from getCategories, tracked
+// against Transfers into the investment accounts instead of Transactions.
+const INVESTMENT_BUDGET_CATEGORY = 'Investiții';
 
 const el = (id) => document.getElementById(id);
 
@@ -1820,6 +1828,7 @@ function syncDashPeriodUI() {
 function renderDashboardPeriodSections() {
   renderCategoryChart();
   renderCategorySpend();
+  renderInvestmentSection();
   renderTrendChart();
 }
 
@@ -2049,6 +2058,48 @@ function renderCategorySpend() {
       <div class="bar-pct">${sum.toFixed(2)} din ${limit.toFixed(2)} lei (${pct.toFixed(0)}%)</div>
     </div>`;
   }).join('');
+}
+
+// Identified by name rather than a fixed id, so this keeps working if accounts are ever
+// reordered or the sheet is reseeded.
+function getInvestmentAccountIds(accountsList) {
+  return accountsList
+    .filter(a => a.name === 'Fond de urgență' || a.name === 'Signal Iduna Investment')
+    .map(a => String(a.id));
+}
+
+function computePeriodInvestments(from, to) {
+  const investmentAccountIds = getInvestmentAccountIds(dash.accounts);
+  return dash.transfers
+    .filter(tr => investmentAccountIds.includes(String(tr.dest_account_id)))
+    .filter(tr => tr.date >= from && tr.date <= to)
+    .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+}
+
+function renderInvestmentSection() {
+  const invested = computePeriodInvestments(dashPeriod.from, dashPeriod.to);
+  const container = el('dashInvestments');
+
+  const budget = dash.budgets.find(b => b.category === INVESTMENT_BUDGET_CATEGORY);
+  const incomeBase = budget ? computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to) : 0;
+  const target = budget ? budgetLimitInLei(budget.percent, incomeBase) : null;
+
+  if (target === null || !(target > 0)) {
+    container.innerHTML = `<div class="bar-row">
+      <div class="bar-row-top"><span>Investit</span><span>${invested.toFixed(2)}</span></div>
+    </div>`;
+    return;
+  }
+
+  const pct = (invested / target) * 100;
+  // Inverted vs. an expense bar: reaching/exceeding the target is the goal, so "met" gets
+  // the green (ok) class and falling short gets the red (over) class.
+  const met = invested >= target;
+  container.innerHTML = `<div class="bar-row">
+    <div class="bar-row-top"><span>Investit</span><span>${invested.toFixed(2)}</span></div>
+    <div class="bar-track"><div class="bar-fill ${met ? 'ok' : 'over'}" style="width:${Math.min(pct, 100)}%"></div></div>
+    <div class="bar-pct">${invested.toFixed(2)} din ${target.toFixed(2)} lei investiți (${pct.toFixed(0)}%)</div>
+  </div>`;
 }
 
 const CHART_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#9333ea', '#0d9488'];
@@ -2481,23 +2532,23 @@ el('recurringForm').addEventListener('submit', async (e) => {
   }
 });
 
+function renderBudgetRow(name, extraLabel) {
+  const existing = budgetItems.find(b => b.category === name);
+  const value = existing ? existing.percent : '';
+  const label = extraLabel ? `${escapeHtml(name)} <span class="subtle">${escapeHtml(extraLabel)}</span>` : escapeHtml(name);
+  return `<div class="budget-row" data-category="${escapeHtml(name)}">
+    <span class="budget-name">${label}</span>
+    <input type="number" min="0" max="100" step="1" class="budget-input" placeholder="fără țintă" value="${value}">
+    <span class="subtle">%</span>
+    <button type="button" class="icon-btn budget-save">Salvează</button>
+  </div>`;
+}
+
 function renderBudgetList() {
   const expenseCategories = categories.filter(c => c.type === 'Expense' && !BUDGET_EXCLUDED_CATEGORIES.includes(c.name));
   const container = el('budgetList');
-  if (expenseCategories.length === 0) {
-    container.innerHTML = '<div class="empty-state">Nicio categorie de cheltuieli definită.</div>';
-    return;
-  }
-  container.innerHTML = expenseCategories.map(c => {
-    const existing = budgetItems.find(b => b.category === c.name);
-    const value = existing ? existing.percent : '';
-    return `<div class="budget-row" data-category="${escapeHtml(c.name)}">
-      <span class="budget-name">${escapeHtml(c.name)}</span>
-      <input type="number" min="0" max="100" step="1" class="budget-input" placeholder="fără țintă" value="${value}">
-      <span class="subtle">%</span>
-      <button type="button" class="icon-btn budget-save">Salvează</button>
-    </div>`;
-  }).join('');
+  const investmentRow = renderBudgetRow(INVESTMENT_BUDGET_CATEGORY, '(din transferuri)');
+  container.innerHTML = investmentRow + expenseCategories.map(c => renderBudgetRow(c.name)).join('');
 }
 
 el('budgetList').addEventListener('click', async (e) => {
