@@ -970,15 +970,16 @@ function debounce(fn, delay) {
 // Shared by Dashboard and Adaugă (budget-warning check): the "income base" that a budget
 // percent gets multiplied against. Current month's income wins; if nothing's been logged
 // yet this month, falls back to the average of the last 3 complete prior months.
-function computeIncomeBase(transactionsList) {
-  const cm = currentMonthKey();
-  const currentMonthIncome = transactionsList
-    .filter(t => t.type === 'Income' && monthKey(t.date) === cm)
+// Income for one specific month; falls back to the average of the 3 months strictly
+// before it when that month has nothing logged yet.
+function computeMonthIncomeBase(transactionsList, monthKeyStr) {
+  const monthIncome = transactionsList
+    .filter(t => t.type === 'Income' && monthKey(t.date) === monthKeyStr)
     .reduce((acc, t) => acc + Number(t.amount), 0);
-  if (currentMonthIncome > 0) return currentMonthIncome;
+  if (monthIncome > 0) return monthIncome;
 
   const priorMonths = [];
-  let probe = cm;
+  let probe = monthKeyStr;
   for (let i = 0; i < 3; i++) { probe = addMonths(probe, -1); priorMonths.push(probe); }
   const total = transactionsList
     .filter(t => t.type === 'Income' && priorMonths.includes(monthKey(t.date)))
@@ -986,13 +987,31 @@ function computeIncomeBase(transactionsList) {
   return total / 3;
 }
 
-function budgetLimitInLei(percent, incomeBase) {
-  return (Number(percent) / 100) * incomeBase;
+// Used where the income base is always "the current month" regardless of any Dashboard
+// period selection (Predicție / Total compare, and the Adaugă-tab over-budget notice).
+function computeIncomeBase(transactionsList) {
+  return computeMonthIncomeBase(transactionsList, currentMonthKey());
 }
 
-function isCurrentCalendarMonthPeriod(from, to) {
-  const range = computeQuickPeriod('this-month');
-  return from === range.from && to === range.to;
+function countMonthsInPeriod(from, to) {
+  const [fy, fm] = from.split('-').map(Number);
+  const [ty, tm] = to.split('-').map(Number);
+  return (ty - fy) * 12 + (tm - fm) + 1;
+}
+
+// Used by the "Cheltuieli pe categorie" section, which follows the Dashboard's period
+// selector: a single-month period gets that specific month's own income base, while a
+// period spanning N months scales today's monthly base by N.
+function computeIncomeBaseForPeriod(transactionsList, from, to) {
+  const monthsInPeriod = countMonthsInPeriod(from, to);
+  if (monthsInPeriod <= 1) {
+    return computeMonthIncomeBase(transactionsList, monthKey(from));
+  }
+  return computeMonthIncomeBase(transactionsList, currentMonthKey()) * monthsInPeriod;
+}
+
+function budgetLimitInLei(percent, incomeBase) {
+  return (Number(percent) / 100) * incomeBase;
 }
 
 function showGlobalBanner(message, type) {
@@ -1998,25 +2017,21 @@ function renderCategorySpend() {
     container.innerHTML = '<div class="empty-state">Nicio cheltuială în perioada selectată.</div>';
     return;
   }
-  // Budget targets are % of the CURRENT month's income, so the progress bar only makes
-  // sense when the selected period is exactly the current calendar month — otherwise just
-  // show the raw sum, like categories without any target defined.
-  const periodIsCurrentMonth = isCurrentCalendarMonthPeriod(dashPeriod.from, dashPeriod.to);
-  const incomeBase = periodIsCurrentMonth ? computeIncomeBase(dash.transactions) : 0;
+  const incomeBase = computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to);
   const rows = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
   container.innerHTML = rows.map(([category, sum]) => {
-    const limit = periodIsCurrentMonth ? getBudgetLimitLei(category, incomeBase) : null;
+    const limit = getBudgetLimitLei(category, incomeBase);
     if (limit === null || !(limit > 0)) {
       return `<div class="bar-row">
         <div class="bar-row-top"><span>${escapeHtml(category)}</span><span>${sum.toFixed(2)}</span></div>
       </div>`;
     }
     const pct = (sum / limit) * 100;
-    const over = sum > limit;
+    const over = sum >= limit;
     return `<div class="bar-row">
-      <div class="bar-row-top"><span>${escapeHtml(category)}</span><span>${sum.toFixed(2)} / ${limit.toFixed(2)}</span></div>
+      <div class="bar-row-top"><span>${escapeHtml(category)}</span><span>${sum.toFixed(2)}</span></div>
       <div class="bar-track"><div class="bar-fill ${over ? 'over' : 'ok'}" style="width:${Math.min(pct, 100)}%"></div></div>
-      <div class="bar-pct">${pct.toFixed(0)}% din țintă</div>
+      <div class="bar-pct">${sum.toFixed(2)} din ${limit.toFixed(2)} lei (${pct.toFixed(0)}%)</div>
     </div>`;
   }).join('');
 }
