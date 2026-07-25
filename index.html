@@ -345,6 +345,19 @@
 
   .chart-wrap { position: relative; height: 240px; }
 
+  .type-badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 999px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  .type-badge-income { background: var(--success-bg); color: var(--success-text); }
+  .type-badge-expense { background: var(--error-bg); color: var(--error-text); }
+
   /* ===== Istoric ===== */
   .hist-total {
     text-align: right;
@@ -911,12 +924,12 @@
 
     <div id="settingsContent" class="hidden">
       <div class="card">
-        <div class="section-title">Cheltuieli recurente</div>
+        <div class="section-title">Recurențe</div>
         <div id="recurringList"></div>
       </div>
 
       <div class="card">
-        <div class="section-title" id="recurringFormTitle">Adaugă cheltuială recurentă</div>
+        <div class="section-title" id="recurringFormTitle">Adaugă recurență</div>
         <form id="recurringForm">
           <label for="recAccount">Cont</label>
           <select id="recAccount"></select>
@@ -939,10 +952,22 @@
           <input type="number" id="recAmount" min="0" step="0.01" placeholder="0.00">
           <div class="field-error" id="recAmountError">Introdu o sumă pozitivă.</div>
 
+          <label>Frecvență</label>
+          <div class="segmented" id="recFrequencyToggle">
+            <button type="button" data-frequency="Lunar" class="active">Lunar</button>
+            <button type="button" data-frequency="Anual">Anual</button>
+          </div>
+
           <label for="recDayOfMonth">Ziua din lună (1-28)</label>
           <input type="number" id="recDayOfMonth" min="1" max="28" step="1" placeholder="ex: 15">
           <div class="field-error" id="recDayOfMonthError">Introdu o zi între 1 și 28.</div>
-          <div class="hint">În ziua respectivă, dacă itemul e activ, se generează automat o tranzacție de confirmat.</div>
+
+          <div id="recMonthOfYearField" class="hidden">
+            <label for="recMonthOfYear">Luna din an</label>
+            <select id="recMonthOfYear"></select>
+          </div>
+
+          <div class="hint">În ziua (și, dacă e anual, luna) respectivă, dacă itemul e activ, se generează automat o tranzacție de confirmat.</div>
 
           <button type="submit" class="submit-btn" id="recSubmit">Adaugă</button>
           <button type="button" class="icon-btn hidden" id="recCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează editarea</button>
@@ -981,6 +1006,8 @@ const BUDGET_EXCLUDED_CATEGORIES = ['Corecții', 'Datorii/Împrumut'];
 // Reserved Budgets.category value — not a real Expense category from getCategories, tracked
 // against Transfers into the investment accounts instead of Transactions.
 const INVESTMENT_BUDGET_CATEGORY = 'Investiții';
+const ROMANIAN_MONTHS = ['Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',
+  'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie'];
 
 const el = (id) => document.getElementById(id);
 
@@ -2021,12 +2048,23 @@ function getBudgetLimitLei(category, incomeBase) {
 // (new categories/users with less history get a smaller, still-honest window).
 // Parameterized so it can be reused unmodified for a single account's own transactions/
 // recurring items (the projection engine) as well as the pooled all-accounts view below.
-function computeCategoryPredictions(transactionsList, recurringList, expenseCategoryNames) {
+// `targetMonthNum` (1-12) is which calendar month this prediction is FOR — defaults to the
+// real current month for the pooled Dashboard caller. An active Anual recurring item only
+// contributes in its own month_of_year; in every other month that category falls through
+// to the historical average UNLESS it has no other active recurring item at all, in which
+// case it's explicitly zero (not blended with unrelated past manual entries) — the item is
+// authoritative for that category once configured.
+function computeCategoryPredictions(transactionsList, recurringList, expenseCategoryNames, targetMonthNum) {
+  const monthNum = targetMonthNum || (new Date().getMonth() + 1);
   const cm = currentMonthKey();
 
-  const activeRecurringByCategory = new Map();
+  const dueRecurringByCategory = new Map();
+  const configuredRecurringCategories = new Set();
   recurringList.filter(r => r.active && r.type === 'Expense').forEach(r => {
-    activeRecurringByCategory.set(r.category, (activeRecurringByCategory.get(r.category) || 0) + Number(r.amount));
+    configuredRecurringCategories.add(r.category);
+    const frequency = r.frequency || 'Lunar';
+    if (frequency === 'Anual' && Number(r.month_of_year) !== monthNum) return;
+    dueRecurringByCategory.set(r.category, (dueRecurringByCategory.get(r.category) || 0) + Number(r.amount));
   });
 
   const pastExpenseTx = transactionsList.filter(t => t.type === 'Expense' && monthKey(t.date) !== cm);
@@ -2045,8 +2083,11 @@ function computeCategoryPredictions(transactionsList, recurringList, expenseCate
   }
 
   return expenseCategoryNames.map(category => {
-    if (activeRecurringByCategory.has(category)) {
-      return { category, amount: activeRecurringByCategory.get(category), source: 'recurring' };
+    if (dueRecurringByCategory.has(category)) {
+      return { category, amount: dueRecurringByCategory.get(category), source: 'recurring' };
+    }
+    if (configuredRecurringCategories.has(category)) {
+      return { category, amount: 0, source: 'recurring-off-cycle' };
     }
     if (windowMonths.length === 0) {
       return { category, amount: null, source: 'insufficient' };
@@ -2181,28 +2222,31 @@ const PROJECTION_MONTHS_DEFAULT = 6;
 // transactions/recurring items). `extra`, when given, layers a hypothetical recurring
 // expense ({amount, startMonthKey}) into every projected month from startMonthKey onward —
 // used by the Simulator's "cheltuială lunară nouă" scenario; omit it for the plain trajectory.
+// Income is treated as a constant monthly rate (no Anual income concept requested), but
+// expenses are recomputed for EACH projected month so an Anual recurring item only lands
+// in its own month_of_year instead of being smeared across all `monthsAhead` months.
 function computeAccountProjection(account, monthsAhead, extra) {
   const accountTx = dash.transactions.filter(t => String(t.account_id) === String(account.id));
   const accountRecurring = dash.recurring.filter(r => String(r.account_id) === String(account.id));
   const expenseCategories = categories.filter(c => c.type === 'Expense').map(c => c.name);
 
   const incomeBase = computeMonthIncomeBase(accountTx, currentMonthKey());
-  const predictions = computeCategoryPredictions(accountTx, accountRecurring, expenseCategories);
-  const totalExpense = predictions.reduce((acc, p) => acc + (p.amount || 0), 0);
-  const baseNetMonthly = incomeBase - totalExpense;
-
   const startingBalance = computeBalances().get(String(account.id)) || 0;
+
   const months = [];
   let balance = startingBalance;
   let probe = currentMonthKey();
   for (let i = 1; i <= monthsAhead; i++) {
     probe = addMonths(probe, 1);
+    const probeMonthNum = Number(probe.split('-')[1]);
+    const monthPredictions = computeCategoryPredictions(accountTx, accountRecurring, expenseCategories, probeMonthNum);
+    const monthExpense = monthPredictions.reduce((acc, p) => acc + (p.amount || 0), 0);
     const extraApplies = !!extra && probe >= extra.startMonthKey;
-    const netMonthly = baseNetMonthly - (extraApplies ? extra.amount : 0);
+    const netMonthly = incomeBase - monthExpense - (extraApplies ? extra.amount : 0);
     balance += netMonthly;
-    months.push({ month: probe, balance, negative: balance < 0 });
+    months.push({ month: probe, balance, negative: balance < 0, predictions: monthPredictions });
   }
-  return { account, startingBalance, netMonthly: baseNetMonthly, incomeBase, predictions, months };
+  return { account, startingBalance, incomeBase, months };
 }
 
 // Would adding `extraMonthlyAmount` to `category`'s monthly spend push it over its budget
@@ -2403,7 +2447,9 @@ function renderPredictions() {
       valuesHtml = `<span class="subtle">Date insuficiente</span>`;
     } else {
       const over = limit !== null && p.amount > limit;
-      const sourceLabel = p.source === 'recurring' ? 'din recurente' : 'medie ultimele luni';
+      const sourceLabel = p.source === 'recurring' ? 'din recurente'
+        : p.source === 'recurring-off-cycle' ? 'anual, nescadent luna asta'
+        : 'medie ultimele luni';
       const amountHtml = `<span class="${over ? 'predict-over' : ''}">${p.amount.toFixed(2)}</span>`;
       const limitHtml = limit !== null ? ` / țintă ${limit.toFixed(2)}` : '';
       valuesHtml = `${amountHtml}${limitHtml}<div class="list-item-sub">${sourceLabel}</div>`;
@@ -2555,6 +2601,7 @@ let settingsLoaded = false;
 let settingsLoading = false;
 let editingRecurringId = null;
 let recFormType = 'Expense';
+let recFrequency = 'Lunar';
 
 async function loadSettings(force) {
   if (settingsLoading) return;
@@ -2591,6 +2638,7 @@ async function loadSettings(force) {
 
 function populateRecurringFormSelects() {
   el('recAccount').innerHTML = accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.currency})</option>`).join('');
+  el('recMonthOfYear').innerHTML = ROMANIAN_MONTHS.map((name, i) => `<option value="${i + 1}">${name}</option>`).join('');
   populateRecCategorySelect();
 }
 
@@ -2608,26 +2656,39 @@ el('recTypeToggle').addEventListener('click', (e) => {
   populateRecCategorySelect();
 });
 
+el('recFrequencyToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-frequency]');
+  if (!btn) return;
+  recFrequency = btn.dataset.frequency;
+  document.querySelectorAll('#recFrequencyToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  el('recMonthOfYearField').classList.toggle('hidden', recFrequency !== 'Anual');
+});
+
 function renderRecurringList() {
   const container = el('recurringList');
   if (recurringItems.length === 0) {
-    container.innerHTML = '<div class="empty-state">Nicio cheltuială recurentă adăugată încă.</div>';
+    container.innerHTML = '<div class="empty-state">Nicio recurență adăugată încă.</div>';
     return;
   }
   const sorted = recurringItems.slice().sort((a, b) => Number(b.active) - Number(a.active) || Number(a.id) - Number(b.id));
   container.innerHTML = sorted.map(r => {
     const account = accounts.find(a => String(a.id) === String(r.account_id));
-    const subParts = [
-      r.type === 'Income' ? 'Venit' : 'Cheltuială',
-      account ? account.name : ('cont #' + r.account_id)
-    ];
+    const frequencyLabel = r.frequency === 'Anual'
+      ? `Anual, ${ROMANIAN_MONTHS[Number(r.month_of_year) - 1] || '?'}`
+      : 'Lunar';
+    const subParts = [frequencyLabel, account ? account.name : ('cont #' + r.account_id)];
     if (r.description) subParts.push(r.description);
     subParts.push('ziua ' + r.day_of_month);
     if (!r.active) subParts.push('inactiv');
+    const typeBadgeClass = r.type === 'Income' ? 'type-badge-income' : 'type-badge-expense';
+    const typeBadgeLabel = r.type === 'Income' ? 'Venit' : 'Cheltuială';
     return `<div class="list-item ${r.active ? '' : 'inactive'}">
       <div class="list-item-top">
         <div>
-          <div class="list-item-title">${escapeHtml(r.category)} · ${Number(r.amount).toFixed(2)} ${account ? escapeHtml(account.currency) : ''}</div>
+          <div class="list-item-title">
+            <span class="type-badge ${typeBadgeClass}">${typeBadgeLabel}</span>
+            ${escapeHtml(r.category)} · ${Number(r.amount).toFixed(2)} ${account ? escapeHtml(account.currency) : ''}
+          </div>
           <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
         </div>
         <div class="list-item-actions">
@@ -2659,7 +2720,7 @@ async function toggleRecurringActive(id, active) {
     await apiPost('updateRecurring', {
       id: item.id, account_id: item.account_id, type: item.type,
       category: item.category, description: item.description, amount: item.amount,
-      day_of_month: item.day_of_month, active
+      day_of_month: item.day_of_month, frequency: item.frequency, month_of_year: item.month_of_year, active
     });
     item.active = active;
     renderRecurringList();
@@ -2681,9 +2742,13 @@ function startEditRecurring(id) {
   el('recDescription').value = item.description || '';
   el('recAmount').value = item.amount;
   el('recDayOfMonth').value = item.day_of_month;
+  recFrequency = item.frequency || 'Lunar';
+  document.querySelectorAll('#recFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === recFrequency));
+  el('recMonthOfYearField').classList.toggle('hidden', recFrequency !== 'Anual');
+  el('recMonthOfYear').value = item.month_of_year || '1';
   setFieldError('recAmountError', false);
   setFieldError('recDayOfMonthError', false);
-  el('recurringFormTitle').textContent = 'Editează cheltuiala recurentă';
+  el('recurringFormTitle').textContent = 'Editează recurența';
   el('recSubmit').textContent = 'Salvează modificările';
   el('recCancelEdit').classList.remove('hidden');
   el('recurringForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2698,9 +2763,13 @@ function resetRecurringForm() {
   el('recDescription').value = '';
   el('recAmount').value = '';
   el('recDayOfMonth').value = '';
+  recFrequency = 'Lunar';
+  document.querySelectorAll('#recFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === 'Lunar'));
+  el('recMonthOfYearField').classList.add('hidden');
+  el('recMonthOfYear').value = '1';
   setFieldError('recAmountError', false);
   setFieldError('recDayOfMonthError', false);
-  el('recurringFormTitle').textContent = 'Adaugă cheltuială recurentă';
+  el('recurringFormTitle').textContent = 'Adaugă recurență';
   el('recSubmit').textContent = 'Adaugă';
   el('recCancelEdit').classList.add('hidden');
 }
@@ -2716,6 +2785,7 @@ el('recurringForm').addEventListener('submit', async (e) => {
   const description = el('recDescription').value.trim();
   const amount = parseFloat(el('recAmount').value);
   const dayOfMonth = parseInt(el('recDayOfMonth').value, 10);
+  const monthOfYear = recFrequency === 'Anual' ? parseInt(el('recMonthOfYear').value, 10) : '';
 
   const amountInvalid = !(amount > 0);
   const dayInvalid = !(dayOfMonth >= 1 && dayOfMonth <= 28);
@@ -2731,12 +2801,16 @@ el('recurringForm').addEventListener('submit', async (e) => {
       const existing = recurringItems.find(r => String(r.id) === String(editingRecurringId));
       await apiPost('updateRecurring', {
         id: editingRecurringId, account_id: accountId, type: recFormType,
-        category, description, amount, day_of_month: dayOfMonth, active: existing ? existing.active : true
+        category, description, amount, day_of_month: dayOfMonth, frequency: recFrequency,
+        month_of_year: monthOfYear, active: existing ? existing.active : true
       });
-      showGlobalBanner('Cheltuiala recurentă a fost actualizată.', 'success');
+      showGlobalBanner('Recurența a fost actualizată.', 'success');
     } else {
-      await apiPost('addRecurring', { account_id: accountId, type: recFormType, category, description, amount, day_of_month: dayOfMonth });
-      showGlobalBanner('Cheltuiala recurentă a fost adăugată.', 'success');
+      await apiPost('addRecurring', {
+        account_id: accountId, type: recFormType, category, description, amount,
+        day_of_month: dayOfMonth, frequency: recFrequency, month_of_year: monthOfYear
+      });
+      showGlobalBanner('Recurența a fost adăugată.', 'success');
     }
     resetRecurringForm();
     await loadSettings(true);

@@ -140,6 +140,31 @@ function setupCategoryRestrictionMigration() {
   }
 }
 
+// Adds frequency/month_of_year to Recurring and renames column 9 from
+// last_generated_month to last_generated_period (same column, now dual-purpose: "YYYY-MM"
+// for Lunar items, "YYYY" for Anual items — unaffected either way, since generation just
+// compares it against whichever key it computes for that item's own frequency). Existing
+// rows default to frequency = "Lunar" (the only kind that existed before this). Safe to
+// re-run.
+function setupRecurringFrequencyMigration() {
+  var sheet = getSheet_(SHEETS.RECURRING);
+  if (sheet.getRange(1, 9).getValue() === 'last_generated_month') {
+    sheet.getRange(1, 9).setValue('last_generated_period');
+  }
+  if (sheet.getRange(1, 10).getValue() !== 'frequency') {
+    sheet.getRange(1, 10).setValue('frequency');
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      var freqDefaults = [];
+      for (var i = 0; i < lastRow - 1; i++) freqDefaults.push(['Lunar']);
+      sheet.getRange(2, 10, lastRow - 1, 1).setValues(freqDefaults);
+    }
+  }
+  if (sheet.getRange(1, 11).getValue() !== 'month_of_year') {
+    sheet.getRange(1, 11).setValue('month_of_year');
+  }
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -392,7 +417,7 @@ function getRecurring() {
   var sheet = getSheet_(SHEETS.RECURRING);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 9).getValues().map(function (row) {
+  return sheet.getRange(2, 1, lastRow - 1, 11).getValues().map(function (row) {
     return {
       id: row[0],
       account_id: row[1],
@@ -402,7 +427,9 @@ function getRecurring() {
       amount: row[5],
       active: row[6] === true || String(row[6]).toUpperCase() === 'TRUE',
       day_of_month: row[7],
-      last_generated_month: row[8]
+      last_generated_period: row[8],
+      frequency: row[9] || 'Lunar',
+      month_of_year: row[10] || null
     };
   });
 }
@@ -415,12 +442,29 @@ function validateDayOfMonth_(value) {
   return dayOfMonth;
 }
 
+function validateFrequency_(value) {
+  if (value !== 'Lunar' && value !== 'Anual') throw new Error('frequency must be "Lunar" or "Anual"');
+  return value;
+}
+
+// month_of_year only means something for Anual items — Lunar ones store it blank.
+function validateMonthOfYear_(value, frequency) {
+  if (frequency !== 'Anual') return '';
+  var month = Number(value);
+  if (!(month >= 1 && month <= 12 && Math.floor(month) === month)) {
+    throw new Error('month_of_year must be an integer between 1 and 12 for Anual frequency');
+  }
+  return month;
+}
+
 function addRecurring(p) {
-  requireFields_(p, ['account_id', 'type', 'category', 'amount', 'day_of_month']);
+  requireFields_(p, ['account_id', 'type', 'category', 'amount', 'day_of_month', 'frequency']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
   var amount = Number(p.amount);
   if (!(amount > 0)) throw new Error('amount must be a positive number');
   var dayOfMonth = validateDayOfMonth_(p.day_of_month);
+  var frequency = validateFrequency_(p.frequency);
+  var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
 
@@ -430,7 +474,10 @@ function addRecurring(p) {
   try {
     var sheet = getSheet_(SHEETS.RECURRING);
     id = nextId_(sheet);
-    sheet.appendRow([id, Number(p.account_id), p.type, p.category, p.description || '', amount, true, dayOfMonth, '']);
+    sheet.appendRow([
+      id, Number(p.account_id), p.type, p.category, p.description || '', amount, true, dayOfMonth,
+      '', frequency, monthOfYear
+    ]);
   } finally {
     lock.releaseLock();
   }
@@ -438,14 +485,18 @@ function addRecurring(p) {
   return { id: id };
 }
 
-// Deliberately leaves column 9 (last_generated_month) untouched — that's internal
-// bookkeeping for generateRecurringTransactions_, not something an edit should reset.
+// Deliberately leaves column 9 (last_generated_period) untouched — that's internal
+// bookkeeping for generateRecurringTransactions_, not something an edit should reset. A
+// stale "YYYY-MM" left behind by a frequency change to/from Anual just never matches the
+// new check's key format, which correctly behaves as "not generated yet under this scheme".
 function updateRecurring(p) {
-  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active', 'day_of_month']);
+  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active', 'day_of_month', 'frequency']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
   var amount = Number(p.amount);
   if (!(amount > 0)) throw new Error('amount must be a positive number');
   var dayOfMonth = validateDayOfMonth_(p.day_of_month);
+  var frequency = validateFrequency_(p.frequency);
+  var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
   var active = (p.active === true || String(p.active).toUpperCase() === 'TRUE');
@@ -459,6 +510,7 @@ function updateRecurring(p) {
     sheet.getRange(rowIndex, 1, 1, 8).setValues([[
       Number(p.id), Number(p.account_id), p.type, p.category, p.description || '', amount, active, dayOfMonth
     ]]);
+    sheet.getRange(rowIndex, 10, 1, 2).setValues([[frequency, monthOfYear]]);
   } finally {
     lock.releaseLock();
   }
@@ -654,7 +706,9 @@ function deleteTransfer(p) {
 function generateRecurringTransactions() {
   var today = new Date();
   var currentDay = today.getDate();
+  var currentMonthNum = today.getMonth() + 1;
   var currentMonthKey = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM');
+  var currentYearKey = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy');
 
   var recurringSheet = getSheet_(SHEETS.RECURRING);
   var lastRow = recurringSheet.getLastRow();
@@ -664,7 +718,7 @@ function generateRecurringTransactions() {
   lock.waitLock(30000);
   var generated = 0;
   try {
-    var rows = recurringSheet.getRange(2, 1, lastRow - 1, 9).getValues();
+    var rows = recurringSheet.getRange(2, 1, lastRow - 1, 11).getValues();
     var txSheet = getSheet_(SHEETS.TRANSACTIONS);
 
     for (var i = 0; i < rows.length; i++) {
@@ -673,9 +727,21 @@ function generateRecurringTransactions() {
       if (!active) continue;
 
       var dayOfMonth = Number(row[7]);
-      var lastGeneratedMonth = row[8];
-      if (currentDay < dayOfMonth) continue;
-      if (lastGeneratedMonth === currentMonthKey) continue;
+      var lastGeneratedPeriod = row[8];
+      var frequency = row[9] || 'Lunar';
+      var monthOfYear = row[10];
+
+      var periodKey;
+      if (frequency === 'Anual') {
+        if (currentMonthNum !== Number(monthOfYear)) continue;
+        if (currentDay < dayOfMonth) continue;
+        if (lastGeneratedPeriod === currentYearKey) continue;
+        periodKey = currentYearKey;
+      } else {
+        if (currentDay < dayOfMonth) continue;
+        if (lastGeneratedPeriod === currentMonthKey) continue;
+        periodKey = currentMonthKey;
+      }
 
       var recurringId = row[0], accountId = row[1], type = row[2], category = row[3],
         description = row[4], amount = row[5];
@@ -684,7 +750,7 @@ function generateRecurringTransactions() {
         newId, Number(accountId), today, type, category, description || '', Number(amount),
         Number(recurringId), false
       ]);
-      recurringSheet.getRange(2 + i, 9).setValue(currentMonthKey);
+      recurringSheet.getRange(2 + i, 9).setValue(periodKey);
       generated++;
     }
   } finally {
