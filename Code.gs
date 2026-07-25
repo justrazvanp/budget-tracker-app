@@ -7,7 +7,9 @@ var SHEETS = {
   ACCOUNTS: 'Accounts',
   TRANSACTIONS: 'Transactions',
   TRANSFERS: 'Transfers',
-  CATEGORIES: 'Categories'
+  CATEGORIES: 'Categories',
+  RECURRING: 'Recurring',
+  BUDGETS: 'Budgets'
 };
 
 function setupSheets() {
@@ -49,6 +51,24 @@ function setupSheets() {
 
   var defaultSheet = ss.getSheetByName('Sheet1');
   if (defaultSheet && ss.getSheets().length > 1) ss.deleteSheet(defaultSheet);
+}
+
+// Phase 4: adds the Recurring/Budgets tabs without touching any existing sheet or data.
+// Safe to run on an already-live spreadsheet — run this once instead of setupSheets().
+function setupPhase4Sheets() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var recurring = getOrCreateSheet_(ss, SHEETS.RECURRING);
+  if (recurring.getLastRow() < 1) {
+    recurring.getRange(1, 1, 1, 7).setValues([
+      ['id', 'account_id', 'type', 'category', 'description', 'amount', 'active']
+    ]);
+  }
+
+  var budgets = getOrCreateSheet_(ss, SHEETS.BUDGETS);
+  if (budgets.getLastRow() < 1) {
+    budgets.getRange(1, 1, 1, 2).setValues([['category', 'monthly_limit']]);
+  }
 }
 
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
@@ -284,6 +304,101 @@ function getTransfers() {
   });
 }
 
+function getRecurring() {
+  var sheet = getSheet_(SHEETS.RECURRING);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, 7).getValues().map(function (row) {
+    return {
+      id: row[0],
+      account_id: row[1],
+      type: row[2],
+      category: row[3],
+      description: row[4],
+      amount: row[5],
+      active: row[6] === true || String(row[6]).toUpperCase() === 'TRUE'
+    };
+  });
+}
+
+function addRecurring(p) {
+  requireFields_(p, ['account_id', 'type', 'category', 'amount']);
+  if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
+  var amount = Number(p.amount);
+  if (!(amount > 0)) throw new Error('amount must be a positive number');
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+  if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
+
+  var id;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.RECURRING);
+    id = nextId_(sheet);
+    sheet.appendRow([id, Number(p.account_id), p.type, p.category, p.description || '', amount, true]);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: id };
+}
+
+function updateRecurring(p) {
+  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active']);
+  if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
+  var amount = Number(p.amount);
+  if (!(amount > 0)) throw new Error('amount must be a positive number');
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+  if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
+  var active = (p.active === true || String(p.active).toUpperCase() === 'TRUE');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.RECURRING);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown recurring id: ' + p.id);
+    sheet.getRange(rowIndex, 1, 1, 7).setValues([[
+      Number(p.id), Number(p.account_id), p.type, p.category, p.description || '', amount, active
+    ]]);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: Number(p.id) };
+}
+
+function getBudgets() {
+  var sheet = getSheet_(SHEETS.BUDGETS);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, 2).getValues()
+    .filter(function (row) { return row[0] !== ''; })
+    .map(function (row) { return { category: row[0], monthly_limit: row[1] }; });
+}
+
+function setBudget(p) {
+  requireFields_(p, ['category', 'monthly_limit']);
+  var limit = Number(p.monthly_limit);
+  if (!(limit >= 0)) throw new Error('monthly_limit must be a non-negative number');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.BUDGETS);
+    var rowIndex = findRowIndexById_(sheet, p.category);
+    if (rowIndex === -1) {
+      sheet.appendRow([p.category, limit]);
+    } else {
+      sheet.getRange(rowIndex, 2).setValue(limit);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { category: p.category, monthly_limit: limit };
+}
+
 function formatDate_(value) {
   if (Object.prototype.toString.call(value) === '[object Date]') {
     return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
@@ -299,7 +414,12 @@ var ACTIONS_ = {
   getAccounts: getAccounts,
   getCategories: getCategories,
   getTransactions: getTransactions,
-  getTransfers: getTransfers
+  getTransfers: getTransfers,
+  getRecurring: getRecurring,
+  addRecurring: addRecurring,
+  updateRecurring: updateRecurring,
+  getBudgets: getBudgets,
+  setBudget: setBudget
 };
 
 function doGet(e) { return handleRequest_(e); }

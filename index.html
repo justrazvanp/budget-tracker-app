@@ -270,6 +270,161 @@
     font-size: 0.9rem;
     padding: 20px 0;
   }
+
+  /* ===== App-level tabs (Adaugă / Dashboard / Setări) ===== */
+  .app-nav { margin-bottom: 16px; }
+
+  .section-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 0 0 12px;
+  }
+
+  .subtle { color: var(--muted); font-size: 0.85rem; }
+
+  .empty-state {
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 20px 0;
+  }
+
+  .dash-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .refresh-btn {
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .refresh-btn:disabled { opacity: 0.6; cursor: default; }
+
+  /* ===== Dashboard ===== */
+  .balance-row, .predict-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .balance-row:last-child, .predict-row:last-child { border-bottom: none; }
+
+  .balance-name, .predict-cat { font-weight: 600; }
+
+  .balance-amount { font-weight: 700; }
+
+  .predict-values { text-align: right; font-size: 0.9rem; }
+
+  .predict-over { color: var(--expense); font-weight: 700; }
+
+  .bar-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .bar-row:last-child { border-bottom: none; }
+
+  .bar-row-top {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9rem;
+    margin-bottom: 6px;
+  }
+
+  .bar-track {
+    height: 8px;
+    background: var(--bg);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .bar-fill { height: 100%; border-radius: 999px; }
+  .bar-fill.ok { background: var(--income); }
+  .bar-fill.over { background: var(--expense); }
+
+  .bar-pct { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+  .total-compare { text-align: center; }
+  .total-compare .big { font-size: 1.6rem; font-weight: 800; }
+  .total-compare .big.over { color: var(--expense); }
+  .total-compare .big.ok { color: var(--income); }
+  .total-compare .sub { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
+  /* ===== Settings: recurring list + budget list ===== */
+  .list-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .list-item:last-child { border-bottom: none; }
+  .list-item.inactive { opacity: 0.5; }
+
+  .list-item-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .list-item-title { font-weight: 600; }
+  .list-item-sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+  .list-item-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
+
+  .icon-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .switch { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+
+  .switch .slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--border);
+    border-radius: 999px;
+    transition: 0.15s;
+  }
+
+  .switch .slider:before {
+    content: "";
+    position: absolute;
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: 0.15s;
+  }
+
+  .switch input:checked + .slider { background: var(--income); }
+  .switch input:checked + .slider:before { transform: translateX(18px); }
+
+  .budget-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .budget-row:last-child { border-bottom: none; }
+  .budget-row .budget-name { flex: 1; font-weight: 600; font-size: 0.92rem; }
+  .budget-row input { width: 110px; }
 </style>
 </head>
 <body>
@@ -283,71 +438,157 @@
     <button type="button" id="syncNowBtn">Sincronizează acum</button>
   </div>
 
-  <div id="loading" class="status-loading">Se încarcă conturile și categoriile…</div>
+  <div class="segmented app-nav" id="appNav">
+    <button type="button" data-tab="add" class="active">Adaugă</button>
+    <button type="button" data-tab="dashboard">Dashboard</button>
+    <button type="button" data-tab="settings">Setări</button>
+  </div>
 
-  <div id="content" class="hidden">
-    <div class="segmented" id="modeToggle">
-      <button type="button" data-mode="transaction" class="active">Tranzacție</button>
-      <button type="button" data-mode="transfer">Transfer</button>
-    </div>
+  <!-- ===== Tab: Adaugă ===== -->
+  <div id="tab-add" class="tab-panel">
+    <div id="loading" class="status-loading">Se încarcă conturile și categoriile…</div>
 
-    <!-- ===== Transaction form ===== -->
-    <form id="transactionForm" class="card">
-      <div class="segmented type-toggle" id="typeToggle">
-        <button type="button" data-type="Expense" class="active expense">Cheltuială</button>
-        <button type="button" data-type="Income" class="income">Venit</button>
+    <div id="content" class="hidden">
+      <div class="segmented" id="modeToggle">
+        <button type="button" data-mode="transaction" class="active">Tranzacție</button>
+        <button type="button" data-mode="transfer">Transfer</button>
       </div>
 
-      <label for="txAccount">Cont</label>
-      <select id="txAccount"></select>
+      <!-- ===== Transaction form ===== -->
+      <form id="transactionForm" class="card">
+        <div class="segmented type-toggle" id="typeToggle">
+          <button type="button" data-type="Expense" class="active expense">Cheltuială</button>
+          <button type="button" data-type="Income" class="income">Venit</button>
+        </div>
 
-      <label for="txCategory">Categorie</label>
-      <div class="quick-categories hidden" id="txQuickCategories"></div>
-      <select id="txCategory">
-        <option value="">-- alege categoria --</option>
-      </select>
-      <div class="field-error" id="txCategoryError">Alege o categorie.</div>
+        <label for="txAccount">Cont</label>
+        <select id="txAccount"></select>
 
-      <label for="txDescription">Descriere</label>
-      <input type="text" id="txDescription" autocomplete="off" placeholder="ex: Cumpărături">
-      <div class="suggestion-list hidden" id="txDescriptionSuggestions"></div>
+        <label for="txCategory">Categorie</label>
+        <div class="quick-categories hidden" id="txQuickCategories"></div>
+        <select id="txCategory">
+          <option value="">-- alege categoria --</option>
+        </select>
+        <div class="field-error" id="txCategoryError">Alege o categorie.</div>
 
-      <label for="txAmount">Sumă</label>
-      <input type="number" id="txAmount" min="0" step="0.01" placeholder="0.00">
-      <div class="field-error" id="txAmountError">Introdu o sumă pozitivă.</div>
+        <label for="txDescription">Descriere</label>
+        <input type="text" id="txDescription" autocomplete="off" placeholder="ex: Cumpărături">
+        <div class="suggestion-list hidden" id="txDescriptionSuggestions"></div>
 
-      <label for="txDate">Dată</label>
-      <input type="date" id="txDate">
+        <label for="txAmount">Sumă</label>
+        <input type="number" id="txAmount" min="0" step="0.01" placeholder="0.00">
+        <div class="field-error" id="txAmountError">Introdu o sumă pozitivă.</div>
 
-      <button type="submit" class="submit-btn" id="txSubmit">Salvează</button>
-    </form>
+        <label for="txDate">Dată</label>
+        <input type="date" id="txDate">
 
-    <!-- ===== Transfer form ===== -->
-    <form id="transferForm" class="card hidden">
-      <label for="trSourceAccount">Cont sursă</label>
-      <select id="trSourceAccount"></select>
+        <button type="submit" class="submit-btn" id="txSubmit">Salvează</button>
+      </form>
 
-      <label for="trDestAccount">Cont destinație</label>
-      <select id="trDestAccount"></select>
-      <div class="field-error" id="trAccountError">Conturile sursă și destinație trebuie să fie diferite.</div>
+      <!-- ===== Transfer form ===== -->
+      <form id="transferForm" class="card hidden">
+        <label for="trSourceAccount">Cont sursă</label>
+        <select id="trSourceAccount"></select>
 
-      <label for="trSourceAmount">Sumă sursă</label>
-      <input type="number" id="trSourceAmount" min="0" step="0.01" placeholder="0.00">
-      <div class="field-error" id="trSourceAmountError">Introdu o sumă pozitivă.</div>
+        <label for="trDestAccount">Cont destinație</label>
+        <select id="trDestAccount"></select>
+        <div class="field-error" id="trAccountError">Conturile sursă și destinație trebuie să fie diferite.</div>
 
-      <label for="trDestAmount">Sumă destinație</label>
-      <input type="number" id="trDestAmount" min="0" step="0.01" placeholder="0.00">
-      <div class="hint" id="trFxHint"></div>
-      <div class="field-error" id="trDestAmountError">Introdu o sumă pozitivă.</div>
+        <label for="trSourceAmount">Sumă sursă</label>
+        <input type="number" id="trSourceAmount" min="0" step="0.01" placeholder="0.00">
+        <div class="field-error" id="trSourceAmountError">Introdu o sumă pozitivă.</div>
 
-      <label for="trDescription">Descriere</label>
-      <input type="text" id="trDescription" placeholder="ex: Economii lunare">
+        <label for="trDestAmount">Sumă destinație</label>
+        <input type="number" id="trDestAmount" min="0" step="0.01" placeholder="0.00">
+        <div class="hint" id="trFxHint"></div>
+        <div class="field-error" id="trDestAmountError">Introdu o sumă pozitivă.</div>
 
-      <label for="trDate">Dată</label>
-      <input type="date" id="trDate">
+        <label for="trDescription">Descriere</label>
+        <input type="text" id="trDescription" placeholder="ex: Economii lunare">
 
-      <button type="submit" class="submit-btn" id="trSubmit">Confirmă</button>
-    </form>
+        <label for="trDate">Dată</label>
+        <input type="date" id="trDate">
+
+        <button type="submit" class="submit-btn" id="trSubmit">Confirmă</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Dashboard ===== -->
+  <div id="tab-dashboard" class="tab-panel hidden">
+    <div class="card dash-toolbar">
+      <span class="subtle">Actualizat: <span id="dashUpdatedAt">–</span></span>
+      <button type="button" class="refresh-btn" id="dashRefreshBtn">Reîmprospătează</button>
+    </div>
+
+    <div id="dashLoading" class="status-loading">Se încarcă datele...</div>
+    <div id="dashError" class="banner error"></div>
+
+    <div id="dashContent" class="hidden">
+      <div class="card total-compare" id="dashTotalCompare"></div>
+
+      <div class="card">
+        <div class="section-title">Solduri curente</div>
+        <div id="dashBalances"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Cheltuieli luna curentă pe categorie</div>
+        <div id="dashCategorySpend"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Predicție lună curentă pe categorie</div>
+        <div id="dashPredictions"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Setări ===== -->
+  <div id="tab-settings" class="tab-panel hidden">
+    <div id="settingsLoading" class="status-loading">Se încarcă setările...</div>
+    <div id="settingsError" class="banner error"></div>
+
+    <div id="settingsContent" class="hidden">
+      <div class="card">
+        <div class="section-title">Cheltuieli recurente</div>
+        <div id="recurringList"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title" id="recurringFormTitle">Adaugă cheltuială recurentă</div>
+        <form id="recurringForm">
+          <label for="recAccount">Cont</label>
+          <select id="recAccount"></select>
+
+          <label>Tip</label>
+          <div class="segmented type-toggle" id="recTypeToggle">
+            <button type="button" data-type="Expense" class="active expense">Cheltuială</button>
+            <button type="button" data-type="Income" class="income">Venit</button>
+          </div>
+
+          <label for="recCategory">Categorie</label>
+          <select id="recCategory">
+            <option value="">-- alege categoria --</option>
+          </select>
+
+          <label for="recDescription">Descriere</label>
+          <input type="text" id="recDescription" placeholder="ex: Abonament Netflix">
+
+          <label for="recAmount">Sumă</label>
+          <input type="number" id="recAmount" min="0" step="0.01" placeholder="0.00">
+          <div class="field-error" id="recAmountError">Introdu o sumă pozitivă.</div>
+
+          <button type="submit" class="submit-btn" id="recSubmit">Adaugă</button>
+          <button type="button" class="icon-btn hidden" id="recCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează editarea</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Ținte de buget</div>
+        <div id="budgetList"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -983,6 +1224,497 @@ el('transferForm').addEventListener('submit', async (e) => {
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Confirmă';
+  }
+});
+
+// ---------- App-level tabs ----------
+el('appNav').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-tab]');
+  if (!btn) return;
+  switchTab(btn.dataset.tab);
+});
+
+function switchTab(tab) {
+  document.querySelectorAll('#appNav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  el('tab-add').classList.toggle('hidden', tab !== 'add');
+  el('tab-dashboard').classList.toggle('hidden', tab !== 'dashboard');
+  el('tab-settings').classList.toggle('hidden', tab !== 'settings');
+  hideGlobalBanner();
+  if (tab === 'dashboard') loadDashboard(false);
+  if (tab === 'settings') loadSettings(false);
+}
+
+// ================= DASHBOARD =================
+let dash = { accounts: [], transactions: [], transfers: [], recurring: [], budgets: [] };
+let dashboardLoaded = false;
+let dashboardLoading = false;
+
+el('dashRefreshBtn').addEventListener('click', () => loadDashboard(true));
+
+async function loadDashboard(force) {
+  if (dashboardLoading) return;
+  if (dashboardLoaded && !force) return;
+  dashboardLoading = true;
+  el('dashError').classList.remove('show');
+  if (!dashboardLoaded) el('dashLoading').classList.remove('hidden');
+  el('dashRefreshBtn').disabled = true;
+  el('dashRefreshBtn').textContent = 'Se actualizează...';
+
+  try {
+    const [accountsData, txData, trData, recurringData, budgetsData, categoriesData] = await Promise.all([
+      apiGet('getAccounts'),
+      apiGet('getTransactions'),
+      apiGet('getTransfers'),
+      apiGet('getRecurring'),
+      apiGet('getBudgets'),
+      apiGet('getCategories')
+    ]);
+    dash.accounts = accountsData;
+    dash.transactions = txData;
+    dash.transfers = trData;
+    dash.recurring = recurringData;
+    dash.budgets = budgetsData;
+    categories = categoriesData;
+    dashboardLoaded = true;
+    el('dashUpdatedAt').textContent = new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
+    renderDashboard();
+    el('dashContent').classList.remove('hidden');
+  } catch (err) {
+    el('dashContent').classList.add('hidden');
+    el('dashError').textContent = 'Nu s-au putut încărca datele: ' + err.message;
+    el('dashError').classList.add('show');
+  } finally {
+    dashboardLoading = false;
+    el('dashLoading').classList.add('hidden');
+    el('dashRefreshBtn').disabled = false;
+    el('dashRefreshBtn').textContent = 'Reîmprospătează';
+  }
+}
+
+function monthKey(dateStr) {
+  return String(dateStr).slice(0, 7); // 'YYYY-MM'
+}
+
+function currentMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function addMonths(ym, delta) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function computeBalances() {
+  const balances = new Map();
+  dash.accounts.forEach(a => balances.set(String(a.id), Number(a.opening_balance)));
+
+  dash.transactions.forEach(t => {
+    const key = String(t.account_id);
+    if (!balances.has(key)) return;
+    const delta = t.type === 'Income' ? Number(t.amount) : -Number(t.amount);
+    balances.set(key, balances.get(key) + delta);
+  });
+
+  dash.transfers.forEach(tr => {
+    const srcKey = String(tr.source_account_id);
+    const dstKey = String(tr.dest_account_id);
+    if (balances.has(srcKey)) balances.set(srcKey, balances.get(srcKey) - Number(tr.source_amount));
+    if (balances.has(dstKey)) balances.set(dstKey, balances.get(dstKey) + Number(tr.dest_amount));
+  });
+
+  return balances;
+}
+
+function computeCurrentMonthExpenseByCategory() {
+  const cm = currentMonthKey();
+  const sums = new Map();
+  dash.transactions.forEach(t => {
+    if (t.type !== 'Expense') return;
+    if (monthKey(t.date) !== cm) return;
+    sums.set(t.category, (sums.get(t.category) || 0) + Number(t.amount));
+  });
+  return sums;
+}
+
+function getBudgetLimit(category) {
+  const b = dash.budgets.find(b => b.category === category);
+  return b ? Number(b.monthly_limit) : null;
+}
+
+// Prediction per Expense category: active Recurring items win; otherwise the monthly
+// average of real spend over however many of the last 3-6 months actually have history
+// (new categories/users with less history get a smaller, still-honest window).
+function computePredictions() {
+  const cm = currentMonthKey();
+  const expenseCategories = categories.filter(c => c.type === 'Expense').map(c => c.name);
+
+  const activeRecurringByCategory = new Map();
+  dash.recurring.filter(r => r.active && r.type === 'Expense').forEach(r => {
+    activeRecurringByCategory.set(r.category, (activeRecurringByCategory.get(r.category) || 0) + Number(r.amount));
+  });
+
+  const pastExpenseTx = dash.transactions.filter(t => t.type === 'Expense' && monthKey(t.date) !== cm);
+  const earliestMonth = pastExpenseTx.length
+    ? pastExpenseTx.map(t => monthKey(t.date)).sort()[0]
+    : null;
+
+  const windowMonths = [];
+  if (earliestMonth) {
+    let probe = cm;
+    while (windowMonths.length < 6) {
+      probe = addMonths(probe, -1);
+      if (probe < earliestMonth) break;
+      windowMonths.push(probe);
+    }
+  }
+
+  return expenseCategories.map(category => {
+    if (activeRecurringByCategory.has(category)) {
+      return { category, amount: activeRecurringByCategory.get(category), source: 'recurring' };
+    }
+    if (windowMonths.length === 0) {
+      return { category, amount: null, source: 'insufficient' };
+    }
+    const sum = pastExpenseTx
+      .filter(t => t.category === category && windowMonths.includes(monthKey(t.date)))
+      .reduce((acc, t) => acc + Number(t.amount), 0);
+    if (sum === 0) {
+      return { category, amount: null, source: 'insufficient' };
+    }
+    return { category, amount: sum / windowMonths.length, source: 'average' };
+  });
+}
+
+function renderTotalCompare() {
+  const predictions = computePredictions();
+  const totalPredicted = predictions.reduce((acc, p) => acc + (p.amount || 0), 0);
+  const hasBudgets = dash.budgets.length > 0;
+  const totalBudget = dash.budgets.reduce((acc, b) => acc + Number(b.monthly_limit), 0);
+
+  const container = el('dashTotalCompare');
+  if (!hasBudgets) {
+    container.innerHTML = `<div class="big">${totalPredicted.toFixed(2)}</div>
+      <div class="sub">Predicție totală lună curentă · Nicio țintă de buget setată încă</div>`;
+    return;
+  }
+  const over = totalPredicted > totalBudget;
+  container.innerHTML = `<div class="big ${over ? 'over' : 'ok'}">${totalPredicted.toFixed(2)} / ${totalBudget.toFixed(2)}</div>
+    <div class="sub">Predicție totală vs. total ținte de buget — lună curentă</div>`;
+}
+
+function renderBalances() {
+  const balances = computeBalances();
+  const container = el('dashBalances');
+  if (dash.accounts.length === 0) {
+    container.innerHTML = '<div class="empty-state">Nu există conturi.</div>';
+    return;
+  }
+  container.innerHTML = dash.accounts.map(a => {
+    const bal = balances.get(String(a.id)) || 0;
+    return `<div class="balance-row">
+      <span class="balance-name">${escapeHtml(a.name)}</span>
+      <span class="balance-amount">${bal.toFixed(2)} ${escapeHtml(a.currency)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderCategorySpend() {
+  const sums = computeCurrentMonthExpenseByCategory();
+  const container = el('dashCategorySpend');
+  if (sums.size === 0) {
+    container.innerHTML = '<div class="empty-state">Nicio cheltuială înregistrată luna aceasta.</div>';
+    return;
+  }
+  const rows = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
+  container.innerHTML = rows.map(([category, sum]) => {
+    const limit = getBudgetLimit(category);
+    if (limit === null || !(limit > 0)) {
+      return `<div class="bar-row">
+        <div class="bar-row-top"><span>${escapeHtml(category)}</span><span>${sum.toFixed(2)}</span></div>
+      </div>`;
+    }
+    const pct = (sum / limit) * 100;
+    const over = sum > limit;
+    return `<div class="bar-row">
+      <div class="bar-row-top"><span>${escapeHtml(category)}</span><span>${sum.toFixed(2)} / ${limit.toFixed(2)}</span></div>
+      <div class="bar-track"><div class="bar-fill ${over ? 'over' : 'ok'}" style="width:${Math.min(pct, 100)}%"></div></div>
+      <div class="bar-pct">${pct.toFixed(0)}% din țintă</div>
+    </div>`;
+  }).join('');
+}
+
+function renderPredictions() {
+  const budgetsByCategory = new Map(dash.budgets.map(b => [b.category, Number(b.monthly_limit)]));
+  const predictions = computePredictions();
+  const container = el('dashPredictions');
+
+  if (predictions.length === 0) {
+    container.innerHTML = '<div class="empty-state">Nicio categorie de cheltuieli definită.</div>';
+    return;
+  }
+  if (predictions.every(p => p.amount === null)) {
+    container.innerHTML = '<div class="empty-state">Nu ai încă suficiente date pentru predicții.</div>';
+    return;
+  }
+
+  container.innerHTML = predictions.map(p => {
+    const limit = budgetsByCategory.has(p.category) ? budgetsByCategory.get(p.category) : null;
+    let valuesHtml;
+    if (p.amount === null) {
+      valuesHtml = `<span class="subtle">Date insuficiente</span>`;
+    } else {
+      const over = limit !== null && p.amount > limit;
+      const sourceLabel = p.source === 'recurring' ? 'din recurente' : 'medie ultimele luni';
+      const amountHtml = `<span class="${over ? 'predict-over' : ''}">${p.amount.toFixed(2)}</span>`;
+      const limitHtml = limit !== null ? ` / țintă ${limit.toFixed(2)}` : '';
+      valuesHtml = `${amountHtml}${limitHtml}<div class="list-item-sub">${sourceLabel}</div>`;
+    }
+    return `<div class="predict-row">
+      <span class="predict-cat">${escapeHtml(p.category)}</span>
+      <span class="predict-values">${valuesHtml}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderDashboard() {
+  renderTotalCompare();
+  renderBalances();
+  renderCategorySpend();
+  renderPredictions();
+}
+
+// ================= SETĂRI =================
+let recurringItems = [];
+let budgetItems = [];
+let settingsLoaded = false;
+let settingsLoading = false;
+let editingRecurringId = null;
+let recFormType = 'Expense';
+
+async function loadSettings(force) {
+  if (settingsLoading) return;
+  if (settingsLoaded && !force) return;
+  settingsLoading = true;
+  el('settingsError').classList.remove('show');
+  if (!settingsLoaded) el('settingsLoading').classList.remove('hidden');
+
+  try {
+    const [recurringData, budgetsData, categoriesData, accountsData] = await Promise.all([
+      apiGet('getRecurring'),
+      apiGet('getBudgets'),
+      apiGet('getCategories'),
+      apiGet('getAccounts')
+    ]);
+    recurringItems = recurringData;
+    budgetItems = budgetsData;
+    categories = categoriesData;
+    accounts = accountsData;
+    settingsLoaded = true;
+    populateRecurringFormSelects();
+    renderRecurringList();
+    renderBudgetList();
+    el('settingsContent').classList.remove('hidden');
+  } catch (err) {
+    el('settingsContent').classList.add('hidden');
+    el('settingsError').textContent = 'Nu s-au putut încărca setările: ' + err.message;
+    el('settingsError').classList.add('show');
+  } finally {
+    settingsLoading = false;
+    el('settingsLoading').classList.add('hidden');
+  }
+}
+
+function populateRecurringFormSelects() {
+  el('recAccount').innerHTML = accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.currency})</option>`).join('');
+  populateRecCategorySelect();
+}
+
+function populateRecCategorySelect() {
+  const filtered = categories.filter(c => c.type === recFormType);
+  el('recCategory').innerHTML = '<option value="">-- alege categoria --</option>' +
+    filtered.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+}
+
+el('recTypeToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-type]');
+  if (!btn) return;
+  recFormType = btn.dataset.type;
+  document.querySelectorAll('#recTypeToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  populateRecCategorySelect();
+});
+
+function renderRecurringList() {
+  const container = el('recurringList');
+  if (recurringItems.length === 0) {
+    container.innerHTML = '<div class="empty-state">Nicio cheltuială recurentă adăugată încă.</div>';
+    return;
+  }
+  const sorted = recurringItems.slice().sort((a, b) => Number(b.active) - Number(a.active) || Number(a.id) - Number(b.id));
+  container.innerHTML = sorted.map(r => {
+    const account = accounts.find(a => String(a.id) === String(r.account_id));
+    const subParts = [
+      r.type === 'Income' ? 'Venit' : 'Cheltuială',
+      account ? account.name : ('cont #' + r.account_id)
+    ];
+    if (r.description) subParts.push(r.description);
+    if (!r.active) subParts.push('inactiv');
+    return `<div class="list-item ${r.active ? '' : 'inactive'}">
+      <div class="list-item-top">
+        <div>
+          <div class="list-item-title">${escapeHtml(r.category)} · ${Number(r.amount).toFixed(2)} ${account ? escapeHtml(account.currency) : ''}</div>
+          <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
+        </div>
+        <div class="list-item-actions">
+          <button type="button" class="icon-btn" data-edit="${r.id}">Editează</button>
+          <label class="switch">
+            <input type="checkbox" data-toggle="${r.id}" ${r.active ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+el('recurringList').addEventListener('click', (e) => {
+  const editBtn = e.target.closest('button[data-edit]');
+  if (editBtn) startEditRecurring(editBtn.dataset.edit);
+});
+
+el('recurringList').addEventListener('change', (e) => {
+  const toggle = e.target.closest('input[data-toggle]');
+  if (toggle) toggleRecurringActive(toggle.dataset.toggle, toggle.checked);
+});
+
+async function toggleRecurringActive(id, active) {
+  const item = recurringItems.find(r => String(r.id) === String(id));
+  if (!item) return;
+  try {
+    await apiPost('updateRecurring', {
+      id: item.id, account_id: item.account_id, type: item.type,
+      category: item.category, description: item.description, amount: item.amount, active
+    });
+    item.active = active;
+    renderRecurringList();
+  } catch (err) {
+    showGlobalBanner('Eroare la actualizare: ' + err.message, 'error');
+    renderRecurringList();
+  }
+}
+
+function startEditRecurring(id) {
+  const item = recurringItems.find(r => String(r.id) === String(id));
+  if (!item) return;
+  editingRecurringId = item.id;
+  recFormType = item.type;
+  document.querySelectorAll('#recTypeToggle button').forEach(b => b.classList.toggle('active', b.dataset.type === item.type));
+  populateRecCategorySelect();
+  el('recAccount').value = item.account_id;
+  el('recCategory').value = item.category;
+  el('recDescription').value = item.description || '';
+  el('recAmount').value = item.amount;
+  setFieldError('recAmountError', false);
+  el('recurringFormTitle').textContent = 'Editează cheltuiala recurentă';
+  el('recSubmit').textContent = 'Salvează modificările';
+  el('recCancelEdit').classList.remove('hidden');
+  el('recurringForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function resetRecurringForm() {
+  editingRecurringId = null;
+  recFormType = 'Expense';
+  document.querySelectorAll('#recTypeToggle button').forEach(b => b.classList.toggle('active', b.dataset.type === 'Expense'));
+  populateRecCategorySelect();
+  el('recAccount').value = accounts[0] ? accounts[0].id : '';
+  el('recDescription').value = '';
+  el('recAmount').value = '';
+  setFieldError('recAmountError', false);
+  el('recurringFormTitle').textContent = 'Adaugă cheltuială recurentă';
+  el('recSubmit').textContent = 'Adaugă';
+  el('recCancelEdit').classList.add('hidden');
+}
+
+el('recCancelEdit').addEventListener('click', resetRecurringForm);
+
+el('recurringForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideGlobalBanner();
+
+  const accountId = el('recAccount').value;
+  const category = el('recCategory').value;
+  const description = el('recDescription').value.trim();
+  const amount = parseFloat(el('recAmount').value);
+
+  const amountInvalid = !(amount > 0);
+  setFieldError('recAmountError', amountInvalid);
+  if (!accountId || !category || amountInvalid) return;
+
+  const submitBtn = el('recSubmit');
+  submitBtn.disabled = true;
+
+  try {
+    if (editingRecurringId) {
+      const existing = recurringItems.find(r => String(r.id) === String(editingRecurringId));
+      await apiPost('updateRecurring', {
+        id: editingRecurringId, account_id: accountId, type: recFormType,
+        category, description, amount, active: existing ? existing.active : true
+      });
+      showGlobalBanner('Cheltuiala recurentă a fost actualizată.', 'success');
+    } else {
+      await apiPost('addRecurring', { account_id: accountId, type: recFormType, category, description, amount });
+      showGlobalBanner('Cheltuiala recurentă a fost adăugată.', 'success');
+    }
+    resetRecurringForm();
+    await loadSettings(true);
+  } catch (err) {
+    showGlobalBanner('Eroare: ' + err.message, 'error');
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+function renderBudgetList() {
+  const expenseCategories = categories.filter(c => c.type === 'Expense');
+  const container = el('budgetList');
+  if (expenseCategories.length === 0) {
+    container.innerHTML = '<div class="empty-state">Nicio categorie de cheltuieli definită.</div>';
+    return;
+  }
+  container.innerHTML = expenseCategories.map(c => {
+    const existing = budgetItems.find(b => b.category === c.name);
+    const value = existing ? existing.monthly_limit : '';
+    return `<div class="budget-row" data-category="${escapeHtml(c.name)}">
+      <span class="budget-name">${escapeHtml(c.name)}</span>
+      <input type="number" min="0" step="0.01" class="budget-input" placeholder="fără țintă" value="${value}">
+      <button type="button" class="icon-btn budget-save">Salvează</button>
+    </div>`;
+  }).join('');
+}
+
+el('budgetList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.budget-save');
+  if (!btn) return;
+  const row = btn.closest('.budget-row');
+  const category = row.dataset.category;
+  const input = row.querySelector('.budget-input');
+  const limit = parseFloat(input.value);
+  if (!(limit >= 0)) {
+    showGlobalBanner('Introdu o sumă validă pentru țintă.', 'error');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await apiPost('setBudget', { category, monthly_limit: limit });
+    const existing = budgetItems.find(b => b.category === category);
+    if (existing) existing.monthly_limit = limit;
+    else budgetItems.push({ category, monthly_limit: limit });
+    showGlobalBanner(`Țintă salvată pentru „${category}”.`, 'success');
+  } catch (err) {
+    showGlobalBanner('Eroare la salvare: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
   }
 });
 
