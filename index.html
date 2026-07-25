@@ -274,6 +274,23 @@
   /* ===== App-level tabs (Adaugă / Dashboard / Setări) ===== */
   .app-nav { margin-bottom: 16px; }
 
+  .app-nav button { position: relative; }
+
+  .nav-badge {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    background: var(--expense);
+    color: #fff;
+    border-radius: 999px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 2px 5px;
+    min-width: 14px;
+    text-align: center;
+  }
+
   .section-title {
     font-size: 1.05rem;
     font-weight: 700;
@@ -375,6 +392,29 @@
   .list-item-sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
 
   .list-item-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
+
+  .pending-confirm-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    align-items: center;
+  }
+
+  .pending-amount-input { flex: 1; }
+
+  .pending-confirm-btn {
+    flex-shrink: 0;
+    border: none;
+    background: var(--accent);
+    color: var(--accent-text);
+    border-radius: 8px;
+    padding: 9px 14px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .pending-confirm-btn:disabled { opacity: 0.6; cursor: default; }
 
   .icon-btn {
     border: 1px solid var(--border);
@@ -525,6 +565,11 @@
     <div id="dashError" class="banner error"></div>
 
     <div id="dashContent" class="hidden">
+      <div class="card hidden" id="dashPendingCard">
+        <div class="section-title">De confirmat</div>
+        <div id="dashPendingList"></div>
+      </div>
+
       <div class="card total-compare" id="dashTotalCompare"></div>
 
       <div class="card">
@@ -578,6 +623,11 @@
           <label for="recAmount">Sumă</label>
           <input type="number" id="recAmount" min="0" step="0.01" placeholder="0.00">
           <div class="field-error" id="recAmountError">Introdu o sumă pozitivă.</div>
+
+          <label for="recDayOfMonth">Ziua din lună (1-28)</label>
+          <input type="number" id="recDayOfMonth" min="1" max="28" step="1" placeholder="ex: 15">
+          <div class="field-error" id="recDayOfMonthError">Introdu o zi între 1 și 28.</div>
+          <div class="hint">În ziua respectivă, dacă itemul e activ, se generează automat o tranzacție de confirmat.</div>
 
           <button type="submit" class="submit-btn" id="recSubmit">Adaugă</button>
           <button type="button" class="icon-btn hidden" id="recCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează editarea</button>
@@ -1245,7 +1295,7 @@ function switchTab(tab) {
 }
 
 // ================= DASHBOARD =================
-let dash = { accounts: [], transactions: [], transfers: [], recurring: [], budgets: [] };
+let dash = { accounts: [], transactions: [], transfers: [], recurring: [], budgets: [], pending: [] };
 let dashboardLoaded = false;
 let dashboardLoading = false;
 
@@ -1261,23 +1311,26 @@ async function loadDashboard(force) {
   el('dashRefreshBtn').textContent = 'Se actualizează...';
 
   try {
-    const [accountsData, txData, trData, recurringData, budgetsData, categoriesData] = await Promise.all([
+    const [accountsData, txData, trData, recurringData, budgetsData, categoriesData, pendingData] = await Promise.all([
       apiGet('getAccounts'),
       apiGet('getTransactions'),
       apiGet('getTransfers'),
       apiGet('getRecurring'),
       apiGet('getBudgets'),
-      apiGet('getCategories')
+      apiGet('getCategories'),
+      apiGet('getPendingConfirmations')
     ]);
     dash.accounts = accountsData;
     dash.transactions = txData;
     dash.transfers = trData;
     dash.recurring = recurringData;
     dash.budgets = budgetsData;
+    dash.pending = pendingData;
     categories = categoriesData;
     dashboardLoaded = true;
     el('dashUpdatedAt').textContent = new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
     renderDashboard();
+    updateDashboardBadge(dash.pending.length);
     el('dashContent').classList.remove('hidden');
   } catch (err) {
     el('dashContent').classList.add('hidden');
@@ -1478,7 +1531,94 @@ function renderPredictions() {
   }).join('');
 }
 
+function renderPendingConfirmations() {
+  const card = el('dashPendingCard');
+  const container = el('dashPendingList');
+  if (dash.pending.length === 0) {
+    card.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+  card.classList.remove('hidden');
+  container.innerHTML = dash.pending.map(p => {
+    const account = dash.accounts.find(a => String(a.id) === String(p.account_id));
+    const subParts = [account ? account.name : ('cont #' + p.account_id), p.date];
+    if (p.description) subParts.splice(1, 0, p.description);
+    return `<div class="list-item" data-id="${p.id}">
+      <div class="list-item-title">${escapeHtml(p.category)}</div>
+      <div class="list-item-sub">${escapeHtml(subParts.join(' · '))}</div>
+      <div class="pending-confirm-row">
+        <input type="number" min="0" step="0.01" class="pending-amount-input" value="${p.amount}">
+        <button type="button" class="pending-confirm-btn">Confirmă</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+el('dashPendingList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.pending-confirm-btn');
+  if (!btn) return;
+  const item = btn.closest('.list-item');
+  const id = item.dataset.id;
+  const input = item.querySelector('.pending-amount-input');
+  const amount = parseFloat(input.value);
+  if (!(amount > 0)) {
+    showGlobalBanner('Introdu o sumă validă.', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Se confirmă...';
+  try {
+    const data = await apiPost('confirmTransaction', { id, amount });
+    dash.pending = dash.pending.filter(p => String(p.id) !== String(id));
+    dash.transactions = dash.transactions.map(t => String(t.id) === String(id) ? Object.assign({}, t, { amount }) : t);
+
+    renderPendingConfirmations();
+    renderTotalCompare();
+    renderBalances();
+    renderCategorySpend();
+    renderPredictions();
+    updateDashboardBadge(dash.pending.length);
+
+    const account = dash.accounts.find(a => String(a.id) === String(data.account_id));
+    showGlobalBanner(
+      `Confirmat! Sold ${account ? account.name : ''}: ${Number(data.balance).toFixed(2)} ${account ? account.currency : ''}`,
+      'success'
+    );
+  } catch (err) {
+    showGlobalBanner('Eroare la confirmare: ' + err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Confirmă';
+  }
+});
+
+function updateDashboardBadge(count) {
+  const btn = document.querySelector('#appNav button[data-tab="dashboard"]');
+  let badge = btn.querySelector('.nav-badge');
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'nav-badge';
+      btn.appendChild(badge);
+    }
+    badge.textContent = count > 9 ? '9+' : String(count);
+  } else if (badge) {
+    badge.remove();
+  }
+}
+
+async function checkPendingBadge() {
+  try {
+    const pending = await apiGet('getPendingConfirmations');
+    updateDashboardBadge(pending.length);
+  } catch (err) {
+    // Non-critical background check — a stale/missing badge isn't worth surfacing an error for.
+  }
+}
+
 function renderDashboard() {
+  renderPendingConfirmations();
   renderTotalCompare();
   renderBalances();
   renderCategorySpend();
@@ -1559,6 +1699,7 @@ function renderRecurringList() {
       account ? account.name : ('cont #' + r.account_id)
     ];
     if (r.description) subParts.push(r.description);
+    subParts.push('ziua ' + r.day_of_month);
     if (!r.active) subParts.push('inactiv');
     return `<div class="list-item ${r.active ? '' : 'inactive'}">
       <div class="list-item-top">
@@ -1594,7 +1735,8 @@ async function toggleRecurringActive(id, active) {
   try {
     await apiPost('updateRecurring', {
       id: item.id, account_id: item.account_id, type: item.type,
-      category: item.category, description: item.description, amount: item.amount, active
+      category: item.category, description: item.description, amount: item.amount,
+      day_of_month: item.day_of_month, active
     });
     item.active = active;
     renderRecurringList();
@@ -1615,7 +1757,9 @@ function startEditRecurring(id) {
   el('recCategory').value = item.category;
   el('recDescription').value = item.description || '';
   el('recAmount').value = item.amount;
+  el('recDayOfMonth').value = item.day_of_month;
   setFieldError('recAmountError', false);
+  setFieldError('recDayOfMonthError', false);
   el('recurringFormTitle').textContent = 'Editează cheltuiala recurentă';
   el('recSubmit').textContent = 'Salvează modificările';
   el('recCancelEdit').classList.remove('hidden');
@@ -1630,7 +1774,9 @@ function resetRecurringForm() {
   el('recAccount').value = accounts[0] ? accounts[0].id : '';
   el('recDescription').value = '';
   el('recAmount').value = '';
+  el('recDayOfMonth').value = '';
   setFieldError('recAmountError', false);
+  setFieldError('recDayOfMonthError', false);
   el('recurringFormTitle').textContent = 'Adaugă cheltuială recurentă';
   el('recSubmit').textContent = 'Adaugă';
   el('recCancelEdit').classList.add('hidden');
@@ -1646,10 +1792,13 @@ el('recurringForm').addEventListener('submit', async (e) => {
   const category = el('recCategory').value;
   const description = el('recDescription').value.trim();
   const amount = parseFloat(el('recAmount').value);
+  const dayOfMonth = parseInt(el('recDayOfMonth').value, 10);
 
   const amountInvalid = !(amount > 0);
+  const dayInvalid = !(dayOfMonth >= 1 && dayOfMonth <= 28);
   setFieldError('recAmountError', amountInvalid);
-  if (!accountId || !category || amountInvalid) return;
+  setFieldError('recDayOfMonthError', dayInvalid);
+  if (!accountId || !category || amountInvalid || dayInvalid) return;
 
   const submitBtn = el('recSubmit');
   submitBtn.disabled = true;
@@ -1659,11 +1808,11 @@ el('recurringForm').addEventListener('submit', async (e) => {
       const existing = recurringItems.find(r => String(r.id) === String(editingRecurringId));
       await apiPost('updateRecurring', {
         id: editingRecurringId, account_id: accountId, type: recFormType,
-        category, description, amount, active: existing ? existing.active : true
+        category, description, amount, day_of_month: dayOfMonth, active: existing ? existing.active : true
       });
       showGlobalBanner('Cheltuiala recurentă a fost actualizată.', 'success');
     } else {
-      await apiPost('addRecurring', { account_id: accountId, type: recFormType, category, description, amount });
+      await apiPost('addRecurring', { account_id: accountId, type: recFormType, category, description, amount, day_of_month: dayOfMonth });
       showGlobalBanner('Cheltuiala recurentă a fost adăugată.', 'success');
     }
     resetRecurringForm();
@@ -1720,6 +1869,7 @@ el('budgetList').addEventListener('click', async (e) => {
 
 init();
 loadTransactionHistory();
+checkPendingBadge();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

@@ -71,6 +71,38 @@ function setupPhase4Sheets() {
   }
 }
 
+// Phase 4b: adds day_of_month/last_generated_month to Recurring and recurring_id/confirmed
+// to Transactions, without touching any existing column or row data. Safe to re-run.
+function setupPhase4bSheets() {
+  var recurring = getSheet_(SHEETS.RECURRING);
+  if (recurring.getRange(1, 8).getValue() !== 'day_of_month') {
+    recurring.getRange(1, 8).setValue('day_of_month');
+    var recLastRow = recurring.getLastRow();
+    if (recLastRow > 1) {
+      var dayDefaults = [];
+      for (var i = 0; i < recLastRow - 1; i++) dayDefaults.push([1]);
+      recurring.getRange(2, 8, recLastRow - 1, 1).setValues(dayDefaults);
+    }
+  }
+  if (recurring.getRange(1, 9).getValue() !== 'last_generated_month') {
+    recurring.getRange(1, 9).setValue('last_generated_month');
+  }
+
+  var tx = getSheet_(SHEETS.TRANSACTIONS);
+  if (tx.getRange(1, 8).getValue() !== 'recurring_id') {
+    tx.getRange(1, 8).setValue('recurring_id');
+  }
+  if (tx.getRange(1, 9).getValue() !== 'confirmed') {
+    tx.getRange(1, 9).setValue('confirmed');
+    var txLastRow = tx.getLastRow();
+    if (txLastRow > 1) {
+      var confirmedDefaults = [];
+      for (var j = 0; j < txLastRow - 1; j++) confirmedDefaults.push([true]);
+      tx.getRange(2, 9, txLastRow - 1, 1).setValues(confirmedDefaults);
+    }
+  }
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -177,7 +209,7 @@ function addTransaction(p) {
   try {
     var sheet = getSheet_(SHEETS.TRANSACTIONS);
     id = nextId_(sheet);
-    sheet.appendRow([id, Number(p.account_id), new Date(p.date), p.type, p.category, p.description || '', amount]);
+    sheet.appendRow([id, Number(p.account_id), new Date(p.date), p.type, p.category, p.description || '', amount, '', true]);
   } finally {
     lock.releaseLock();
   }
@@ -308,7 +340,7 @@ function getRecurring() {
   var sheet = getSheet_(SHEETS.RECURRING);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 7).getValues().map(function (row) {
+  return sheet.getRange(2, 1, lastRow - 1, 9).getValues().map(function (row) {
     return {
       id: row[0],
       account_id: row[1],
@@ -316,16 +348,27 @@ function getRecurring() {
       category: row[3],
       description: row[4],
       amount: row[5],
-      active: row[6] === true || String(row[6]).toUpperCase() === 'TRUE'
+      active: row[6] === true || String(row[6]).toUpperCase() === 'TRUE',
+      day_of_month: row[7],
+      last_generated_month: row[8]
     };
   });
 }
 
+function validateDayOfMonth_(value) {
+  var dayOfMonth = Number(value);
+  if (!(dayOfMonth >= 1 && dayOfMonth <= 28 && Math.floor(dayOfMonth) === dayOfMonth)) {
+    throw new Error('day_of_month must be an integer between 1 and 28');
+  }
+  return dayOfMonth;
+}
+
 function addRecurring(p) {
-  requireFields_(p, ['account_id', 'type', 'category', 'amount']);
+  requireFields_(p, ['account_id', 'type', 'category', 'amount', 'day_of_month']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
   var amount = Number(p.amount);
   if (!(amount > 0)) throw new Error('amount must be a positive number');
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
 
@@ -335,7 +378,7 @@ function addRecurring(p) {
   try {
     var sheet = getSheet_(SHEETS.RECURRING);
     id = nextId_(sheet);
-    sheet.appendRow([id, Number(p.account_id), p.type, p.category, p.description || '', amount, true]);
+    sheet.appendRow([id, Number(p.account_id), p.type, p.category, p.description || '', amount, true, dayOfMonth, '']);
   } finally {
     lock.releaseLock();
   }
@@ -343,11 +386,14 @@ function addRecurring(p) {
   return { id: id };
 }
 
+// Deliberately leaves column 9 (last_generated_month) untouched — that's internal
+// bookkeeping for generateRecurringTransactions_, not something an edit should reset.
 function updateRecurring(p) {
-  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active']);
+  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active', 'day_of_month']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
   var amount = Number(p.amount);
   if (!(amount > 0)) throw new Error('amount must be a positive number');
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
   var active = (p.active === true || String(p.active).toUpperCase() === 'TRUE');
@@ -358,8 +404,8 @@ function updateRecurring(p) {
     var sheet = getSheet_(SHEETS.RECURRING);
     var rowIndex = findRowIndexById_(sheet, p.id);
     if (rowIndex === -1) throw new Error('Unknown recurring id: ' + p.id);
-    sheet.getRange(rowIndex, 1, 1, 7).setValues([[
-      Number(p.id), Number(p.account_id), p.type, p.category, p.description || '', amount, active
+    sheet.getRange(rowIndex, 1, 1, 8).setValues([[
+      Number(p.id), Number(p.account_id), p.type, p.category, p.description || '', amount, active, dayOfMonth
     ]]);
   } finally {
     lock.releaseLock();
@@ -399,6 +445,96 @@ function setBudget(p) {
   return { category: p.category, monthly_limit: limit };
 }
 
+function getPendingConfirmations() {
+  var sheet = getSheet_(SHEETS.TRANSACTIONS);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, 9).getValues()
+    .filter(function (row) { return row[8] === false || String(row[8]).toUpperCase() === 'FALSE'; })
+    .map(function (row) {
+      return {
+        id: row[0],
+        account_id: row[1],
+        date: formatDate_(row[2]),
+        type: row[3],
+        category: row[4],
+        description: row[5],
+        amount: row[6],
+        recurring_id: row[7]
+      };
+    });
+}
+
+function confirmTransaction(p) {
+  requireFields_(p, ['id', 'amount']);
+  var amount = Number(p.amount);
+  if (!(amount > 0)) throw new Error('amount must be a positive number');
+
+  var accountId;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.TRANSACTIONS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown transaction id: ' + p.id);
+    accountId = sheet.getRange(rowIndex, 2).getValue();
+    sheet.getRange(rowIndex, 7).setValue(amount);
+    sheet.getRange(rowIndex, 9).setValue(true);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: Number(p.id), account_id: Number(accountId), balance: getAccountBalance_(accountId) };
+}
+
+// Meant to run on a daily time-driven trigger (Apps Script editor > Triggers), not via the
+// web app — it is intentionally not registered in ACTIONS_. For each active Recurring row
+// whose day_of_month has been reached and hasn't already been generated this month, appends
+// an unconfirmed Transaction and stamps last_generated_month — that stamp is what makes
+// re-running the same day (or later the same month) a no-op instead of a duplicate.
+function generateRecurringTransactions() {
+  var today = new Date();
+  var currentDay = today.getDate();
+  var currentMonthKey = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM');
+
+  var recurringSheet = getSheet_(SHEETS.RECURRING);
+  var lastRow = recurringSheet.getLastRow();
+  if (lastRow < 2) return { generated: 0 };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var generated = 0;
+  try {
+    var rows = recurringSheet.getRange(2, 1, lastRow - 1, 9).getValues();
+    var txSheet = getSheet_(SHEETS.TRANSACTIONS);
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var active = row[6] === true || String(row[6]).toUpperCase() === 'TRUE';
+      if (!active) continue;
+
+      var dayOfMonth = Number(row[7]);
+      var lastGeneratedMonth = row[8];
+      if (currentDay < dayOfMonth) continue;
+      if (lastGeneratedMonth === currentMonthKey) continue;
+
+      var recurringId = row[0], accountId = row[1], type = row[2], category = row[3],
+        description = row[4], amount = row[5];
+      var newId = nextId_(txSheet);
+      txSheet.appendRow([
+        newId, Number(accountId), today, type, category, description || '', Number(amount),
+        Number(recurringId), false
+      ]);
+      recurringSheet.getRange(2 + i, 9).setValue(currentMonthKey);
+      generated++;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { generated: generated };
+}
+
 function formatDate_(value) {
   if (Object.prototype.toString.call(value) === '[object Date]') {
     return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
@@ -419,7 +555,9 @@ var ACTIONS_ = {
   addRecurring: addRecurring,
   updateRecurring: updateRecurring,
   getBudgets: getBudgets,
-  setBudget: setBudget
+  setBudget: setBudget,
+  getPendingConfirmations: getPendingConfirmations,
+  confirmTransaction: confirmTransaction
 };
 
 function doGet(e) { return handleRequest_(e); }
