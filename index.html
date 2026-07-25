@@ -572,15 +572,15 @@
   </div>
 
   <div class="segmented app-nav" id="appNav">
-    <button type="button" data-tab="add" class="active">Adaugă</button>
-    <button type="button" data-tab="dashboard">Dashboard</button>
+    <button type="button" data-tab="add">Adaugă</button>
+    <button type="button" data-tab="dashboard" class="active">Dashboard</button>
     <button type="button" data-tab="history">Istoric</button>
     <button type="button" data-tab="simulator">Simulator</button>
     <button type="button" data-tab="settings">Setări</button>
   </div>
 
   <!-- ===== Tab: Adaugă ===== -->
-  <div id="tab-add" class="tab-panel">
+  <div id="tab-add" class="tab-panel hidden">
     <div id="loading" class="status-loading">Se încarcă conturile și categoriile…</div>
 
     <div id="content" class="hidden">
@@ -658,7 +658,7 @@
   </div>
 
   <!-- ===== Tab: Dashboard ===== -->
-  <div id="tab-dashboard" class="tab-panel hidden">
+  <div id="tab-dashboard" class="tab-panel">
     <div class="card dash-toolbar">
       <span class="subtle">Actualizat: <span id="dashUpdatedAt">–</span></span>
       <button type="button" class="refresh-btn" id="dashRefreshBtn">Reîmprospătează</button>
@@ -3334,6 +3334,7 @@ init();
 loadTransactionHistory();
 loadAddTabBudgets();
 checkPendingBadge();
+switchTab('dashboard');
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
