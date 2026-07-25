@@ -274,7 +274,58 @@
   /* ===== App-level tabs (Adaugă / Dashboard / Setări) ===== */
   .app-nav { margin-bottom: 16px; }
 
-  .app-nav button { position: relative; }
+  .app-nav button { position: relative; font-size: 0.85rem; padding: 10px 4px; }
+
+  /* ===== Period selector (Dashboard + Istoric) ===== */
+  .period-custom { display: flex; gap: 8px; margin-top: 8px; }
+  .period-custom-field { flex: 1; }
+  .period-custom-field label { margin: 0 0 6px; }
+
+  .period-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+  }
+
+  .period-nav-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 8px;
+    width: 40px;
+    height: 40px;
+    font-size: 1.1rem;
+    cursor: pointer;
+  }
+
+  .period-lock-badge {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    vertical-align: middle;
+  }
+
+  .chart-wrap { position: relative; height: 240px; }
+
+  /* ===== Istoric ===== */
+  .hist-total {
+    text-align: right;
+    font-weight: 700;
+    font-size: 0.9rem;
+    padding-top: 10px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+
+  .hist-amount-income { color: var(--income); }
+  .hist-amount-expense { color: var(--expense); }
 
   .nav-badge {
     position: absolute;
@@ -481,6 +532,7 @@
   <div class="segmented app-nav" id="appNav">
     <button type="button" data-tab="add" class="active">Adaugă</button>
     <button type="button" data-tab="dashboard">Dashboard</button>
+    <button type="button" data-tab="history">Istoric</button>
     <button type="button" data-tab="settings">Setări</button>
   </div>
 
@@ -570,6 +622,30 @@
         <div id="dashPendingList"></div>
       </div>
 
+      <div class="card">
+        <div class="section-title">Perioadă</div>
+        <div class="segmented" id="dashPeriodQuick">
+          <button type="button" data-period="this-month" class="active">Luna aceasta</button>
+          <button type="button" data-period="last-month">Luna trecută</button>
+          <button type="button" data-period="this-year">Anul acesta</button>
+        </div>
+        <div class="period-custom">
+          <div class="period-custom-field">
+            <label for="dashPeriodFrom">De la</label>
+            <input type="date" id="dashPeriodFrom">
+          </div>
+          <div class="period-custom-field">
+            <label for="dashPeriodTo">Până la</label>
+            <input type="date" id="dashPeriodTo">
+          </div>
+        </div>
+        <div class="period-nav">
+          <button type="button" class="period-nav-btn" id="dashPeriodPrev">←</button>
+          <span class="subtle" id="dashPeriodLabel"></span>
+          <button type="button" class="period-nav-btn" id="dashPeriodNext">→</button>
+        </div>
+      </div>
+
       <div class="card total-compare" id="dashTotalCompare"></div>
 
       <div class="card">
@@ -578,13 +654,143 @@
       </div>
 
       <div class="card">
-        <div class="section-title">Cheltuieli luna curentă pe categorie</div>
+        <div class="section-title">Cheltuieli pe categorii</div>
+        <div id="dashCategoryChartEmpty" class="empty-state hidden">Nu există cheltuieli în perioada selectată.</div>
+        <div class="chart-wrap"><canvas id="dashCategoryChart"></canvas></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Cheltuieli pe categorie</div>
         <div id="dashCategorySpend"></div>
       </div>
 
       <div class="card">
-        <div class="section-title">Predicție lună curentă pe categorie</div>
+        <div class="section-title">Evoluție lunară (venituri vs. cheltuieli)</div>
+        <div class="chart-wrap"><canvas id="dashTrendChart"></canvas></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Predicție pe categorie<span class="period-lock-badge">mereu luna curentă</span></div>
         <div id="dashPredictions"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Istoric ===== -->
+  <div id="tab-history" class="tab-panel hidden">
+    <div class="card">
+      <div class="section-title">Filtre</div>
+
+      <label>Perioadă</label>
+      <div class="segmented" id="histPeriodQuick">
+        <button type="button" data-period="this-month" class="active">Luna aceasta</button>
+        <button type="button" data-period="last-month">Luna trecută</button>
+        <button type="button" data-period="this-year">Anul acesta</button>
+      </div>
+      <div class="period-custom">
+        <div class="period-custom-field">
+          <label for="histPeriodFrom">De la</label>
+          <input type="date" id="histPeriodFrom">
+        </div>
+        <div class="period-custom-field">
+          <label for="histPeriodTo">Până la</label>
+          <input type="date" id="histPeriodTo">
+        </div>
+      </div>
+
+      <label for="histAccount">Cont</label>
+      <select id="histAccount"><option value="">Toate conturile</option></select>
+
+      <label for="histType">Tip</label>
+      <select id="histType">
+        <option value="">Toate</option>
+        <option value="Expense">Cheltuială</option>
+        <option value="Income">Venit</option>
+      </select>
+
+      <label for="histCategory">Categorie</label>
+      <select id="histCategory"><option value="">Toate categoriile</option></select>
+
+      <label for="histSearch">Caută în descriere</label>
+      <input type="text" id="histSearch" placeholder="ex: cumpărături">
+    </div>
+
+    <div class="segmented" id="histSectionToggle">
+      <button type="button" data-section="transactions" class="active">Tranzacții</button>
+      <button type="button" data-section="transfers">Transferuri</button>
+    </div>
+
+    <div id="histLoading" class="status-loading">Se încarcă...</div>
+    <div id="histError" class="banner error"></div>
+
+    <div id="histTransactionsPanel">
+      <div class="card hidden" id="histTxEditCard">
+        <div class="section-title">Editează tranzacția</div>
+        <form id="histTxEditForm">
+          <label for="histTxAccount">Cont</label>
+          <select id="histTxAccount"></select>
+
+          <div class="segmented type-toggle" id="histTxTypeToggle">
+            <button type="button" data-type="Expense" class="active expense">Cheltuială</button>
+            <button type="button" data-type="Income" class="income">Venit</button>
+          </div>
+
+          <label for="histTxCategory">Categorie</label>
+          <select id="histTxCategory"></select>
+
+          <label for="histTxDescription">Descriere</label>
+          <input type="text" id="histTxDescription">
+
+          <label for="histTxAmount">Sumă</label>
+          <input type="number" id="histTxAmount" min="0" step="0.01">
+          <div class="field-error" id="histTxAmountError">Introdu o sumă pozitivă.</div>
+
+          <label for="histTxDate">Dată</label>
+          <input type="date" id="histTxDate">
+
+          <button type="submit" class="submit-btn" id="histTxSaveBtn">Salvează modificările</button>
+          <button type="button" class="icon-btn" id="histTxCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div id="histTxList"></div>
+        <div class="hist-total" id="histTxTotal"></div>
+      </div>
+    </div>
+
+    <div id="histTransfersPanel" class="hidden">
+      <div class="card hidden" id="histTrEditCard">
+        <div class="section-title">Editează transferul</div>
+        <form id="histTrEditForm">
+          <label for="histTrSourceAccount">Cont sursă</label>
+          <select id="histTrSourceAccount"></select>
+
+          <label for="histTrDestAccount">Cont destinație</label>
+          <select id="histTrDestAccount"></select>
+
+          <label for="histTrSourceAmount">Sumă sursă</label>
+          <input type="number" id="histTrSourceAmount" min="0" step="0.01">
+          <div class="field-error" id="histTrSourceAmountError">Introdu o sumă pozitivă.</div>
+
+          <label for="histTrDestAmount">Sumă destinație</label>
+          <input type="number" id="histTrDestAmount" min="0" step="0.01">
+          <div class="field-error" id="histTrDestAmountError">Introdu o sumă pozitivă.</div>
+
+          <label for="histTrDescription">Descriere</label>
+          <input type="text" id="histTrDescription">
+
+          <label for="histTrDate">Dată</label>
+          <input type="date" id="histTrDate">
+
+          <button type="submit" class="submit-btn" id="histTrSaveBtn">Salvează modificările</button>
+          <button type="button" class="icon-btn" id="histTrCancelEdit" style="margin-top:8px; width:100%; padding:11px;">Anulează</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div id="histTrList"></div>
+        <div class="hist-total" id="histTrTotal"></div>
       </div>
     </div>
   </div>
@@ -642,6 +848,7 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 // ============ CONFIGURARE ============
 const WEBAPP_URL = "https://script.google.com/macros/s/AKfycbylP-vssh8iUL3_34vcJhbZ8sY_07HJhXvJC9EGs9fOT16ol0SEUNX_ecmOazgGZPewsg/exec";
@@ -668,6 +875,56 @@ function todayStr() {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// ---------- Period helpers (shared by Dashboard + Istoric) ----------
+function pad2(n) { return String(n).padStart(2, '0'); }
+function ymd(date) { return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`; }
+
+function computeQuickPeriod(type) {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  if (type === 'this-month') return { from: ymd(new Date(y, m, 1)), to: ymd(new Date(y, m + 1, 0)) };
+  if (type === 'last-month') return { from: ymd(new Date(y, m - 1, 1)), to: ymd(new Date(y, m, 0)) };
+  if (type === 'this-year') return { from: ymd(new Date(y, 0, 1)), to: ymd(new Date(y, 11, 31)) };
+  return null;
+}
+
+// Adds `delta` months to a YYYY-MM-DD string, clamping the day to the target month's last
+// day — plain Date arithmetic on the day-of-month rolls over into a later month for dates
+// like the 31st, which silently breaks "last day of month" when shifting across months.
+function addMonthsClamped(dateStr, delta) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const targetMonthIndex = m - 1 + delta;
+  const daysInTargetMonth = new Date(y, targetMonthIndex + 1, 0).getDate();
+  return ymd(new Date(y, targetMonthIndex, Math.min(d, daysInTargetMonth)));
+}
+
+function shiftPeriodByMonths(from, to, delta) {
+  return { from: addMonthsClamped(from, delta), to: addMonthsClamped(to, delta) };
+}
+
+function isSingleCalendarMonth(from, to) {
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  if (fy !== ty || fm !== tm || fd !== 1) return false;
+  return td === new Date(fy, fm, 0).getDate();
+}
+
+function formatPeriodLabel(from, to) {
+  const fmt = (s) => {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('ro-RO', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+  return `${fmt(from)} – ${fmt(to)}`;
+}
+
+function debounce(fn, delay) {
+  let handle;
+  return (...args) => {
+    clearTimeout(handle);
+    handle = setTimeout(() => fn(...args), delay);
+  };
 }
 
 function showGlobalBanner(message, type) {
@@ -1288,9 +1545,11 @@ function switchTab(tab) {
   document.querySelectorAll('#appNav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   el('tab-add').classList.toggle('hidden', tab !== 'add');
   el('tab-dashboard').classList.toggle('hidden', tab !== 'dashboard');
+  el('tab-history').classList.toggle('hidden', tab !== 'history');
   el('tab-settings').classList.toggle('hidden', tab !== 'settings');
   hideGlobalBanner();
   if (tab === 'dashboard') loadDashboard(false);
+  if (tab === 'history' && !histLoaded) loadHistData(false);
   if (tab === 'settings') loadSettings(false);
 }
 
@@ -1298,6 +1557,56 @@ function switchTab(tab) {
 let dash = { accounts: [], transactions: [], transfers: [], recurring: [], budgets: [], pending: [] };
 let dashboardLoaded = false;
 let dashboardLoading = false;
+
+let dashPeriod = (() => {
+  const range = computeQuickPeriod('this-month');
+  return { type: 'this-month', from: range.from, to: range.to };
+})();
+
+function syncDashPeriodUI() {
+  document.querySelectorAll('#dashPeriodQuick button').forEach(b => b.classList.toggle('active', b.dataset.period === dashPeriod.type));
+  el('dashPeriodFrom').value = dashPeriod.from;
+  el('dashPeriodTo').value = dashPeriod.to;
+  el('dashPeriodLabel').textContent = formatPeriodLabel(dashPeriod.from, dashPeriod.to);
+}
+
+function renderDashboardPeriodSections() {
+  renderCategoryChart();
+  renderCategorySpend();
+}
+
+el('dashPeriodQuick').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-period]');
+  if (!btn) return;
+  const range = computeQuickPeriod(btn.dataset.period);
+  dashPeriod = { type: btn.dataset.period, from: range.from, to: range.to };
+  syncDashPeriodUI();
+  renderDashboardPeriodSections();
+});
+
+function applyDashCustomPeriod() {
+  const from = el('dashPeriodFrom').value;
+  const to = el('dashPeriodTo').value;
+  if (!from || !to || from > to) return;
+  dashPeriod = { type: 'custom', from, to };
+  syncDashPeriodUI();
+  renderDashboardPeriodSections();
+}
+
+el('dashPeriodFrom').addEventListener('change', applyDashCustomPeriod);
+el('dashPeriodTo').addEventListener('change', applyDashCustomPeriod);
+
+el('dashPeriodPrev').addEventListener('click', () => {
+  dashPeriod = Object.assign({ type: 'custom' }, shiftPeriodByMonths(dashPeriod.from, dashPeriod.to, -1));
+  syncDashPeriodUI();
+  renderDashboardPeriodSections();
+});
+
+el('dashPeriodNext').addEventListener('click', () => {
+  dashPeriod = Object.assign({ type: 'custom' }, shiftPeriodByMonths(dashPeriod.from, dashPeriod.to, 1));
+  syncDashPeriodUI();
+  renderDashboardPeriodSections();
+});
 
 el('dashRefreshBtn').addEventListener('click', () => loadDashboard(true));
 
@@ -1380,12 +1689,11 @@ function computeBalances() {
   return balances;
 }
 
-function computeCurrentMonthExpenseByCategory() {
-  const cm = currentMonthKey();
+function computePeriodExpenseByCategory(from, to) {
   const sums = new Map();
   dash.transactions.forEach(t => {
     if (t.type !== 'Expense') return;
-    if (monthKey(t.date) !== cm) return;
+    if (t.date < from || t.date > to) return;
     sums.set(t.category, (sums.get(t.category) || 0) + Number(t.amount));
   });
   return sums;
@@ -1449,12 +1757,12 @@ function renderTotalCompare() {
   const container = el('dashTotalCompare');
   if (!hasBudgets) {
     container.innerHTML = `<div class="big">${totalPredicted.toFixed(2)}</div>
-      <div class="sub">Predicție totală lună curentă · Nicio țintă de buget setată încă</div>`;
+      <div class="sub">Predicție totală · Nicio țintă de buget setată încă<span class="period-lock-badge">mereu luna curentă</span></div>`;
     return;
   }
   const over = totalPredicted > totalBudget;
   container.innerHTML = `<div class="big ${over ? 'over' : 'ok'}">${totalPredicted.toFixed(2)} / ${totalBudget.toFixed(2)}</div>
-    <div class="sub">Predicție totală vs. total ținte de buget — lună curentă</div>`;
+    <div class="sub">Predicție totală vs. total ținte de buget<span class="period-lock-badge">mereu luna curentă</span></div>`;
 }
 
 function renderBalances() {
@@ -1474,15 +1782,19 @@ function renderBalances() {
 }
 
 function renderCategorySpend() {
-  const sums = computeCurrentMonthExpenseByCategory();
+  const sums = computePeriodExpenseByCategory(dashPeriod.from, dashPeriod.to);
   const container = el('dashCategorySpend');
   if (sums.size === 0) {
-    container.innerHTML = '<div class="empty-state">Nicio cheltuială înregistrată luna aceasta.</div>';
+    container.innerHTML = '<div class="empty-state">Nicio cheltuială în perioada selectată.</div>';
     return;
   }
+  // Budget targets are monthly, so the %-of-target bar only makes sense when the selected
+  // period is exactly one calendar month — otherwise just show the raw sum, like categories
+  // without any target defined.
+  const periodIsMonth = isSingleCalendarMonth(dashPeriod.from, dashPeriod.to);
   const rows = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
   container.innerHTML = rows.map(([category, sum]) => {
-    const limit = getBudgetLimit(category);
+    const limit = periodIsMonth ? getBudgetLimit(category) : null;
     if (limit === null || !(limit > 0)) {
       return `<div class="bar-row">
         <div class="bar-row-top"><span>${escapeHtml(category)}</span><span>${sum.toFixed(2)}</span></div>
@@ -1496,6 +1808,98 @@ function renderCategorySpend() {
       <div class="bar-pct">${pct.toFixed(0)}% din țintă</div>
     </div>`;
   }).join('');
+}
+
+const CHART_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#9333ea', '#0d9488'];
+
+let dashCategoryChartInstance = null;
+function renderCategoryChart() {
+  if (typeof Chart === 'undefined') return;
+  const sums = computePeriodExpenseByCategory(dashPeriod.from, dashPeriod.to);
+  const emptyEl = el('dashCategoryChartEmpty');
+  const canvas = el('dashCategoryChart');
+
+  if (sums.size === 0) {
+    emptyEl.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    if (dashCategoryChartInstance) { dashCategoryChartInstance.destroy(); dashCategoryChartInstance = null; }
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  canvas.classList.remove('hidden');
+
+  const entries = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
+  const labels = entries.map(([cat]) => cat);
+  const data = entries.map(([, sum]) => sum);
+
+  if (dashCategoryChartInstance) {
+    dashCategoryChartInstance.data.labels = labels;
+    dashCategoryChartInstance.data.datasets[0].data = data;
+    dashCategoryChartInstance.data.datasets[0].backgroundColor = labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
+    dashCategoryChartInstance.update();
+    return;
+  }
+
+  dashCategoryChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } }
+    }
+  });
+}
+
+function formatMonthLabel(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('ro-RO', { month: 'short', year: '2-digit' });
+}
+
+let dashTrendChartInstance = null;
+function renderTrendChart() {
+  if (typeof Chart === 'undefined') return;
+  const months = [];
+  let probe = currentMonthKey();
+  for (let i = 0; i < 6; i++) { months.unshift(probe); probe = addMonths(probe, -1); }
+
+  const incomeByMonth = new Map(months.map(m => [m, 0]));
+  const expenseByMonth = new Map(months.map(m => [m, 0]));
+  dash.transactions.forEach(t => {
+    const mk = monthKey(t.date);
+    if (!incomeByMonth.has(mk)) return;
+    if (t.type === 'Income') incomeByMonth.set(mk, incomeByMonth.get(mk) + Number(t.amount));
+    else if (t.type === 'Expense') expenseByMonth.set(mk, expenseByMonth.get(mk) + Number(t.amount));
+  });
+
+  const labels = months.map(formatMonthLabel);
+  const incomeData = months.map(m => incomeByMonth.get(m));
+  const expenseData = months.map(m => expenseByMonth.get(m));
+
+  if (dashTrendChartInstance) {
+    dashTrendChartInstance.data.labels = labels;
+    dashTrendChartInstance.data.datasets[0].data = incomeData;
+    dashTrendChartInstance.data.datasets[1].data = expenseData;
+    dashTrendChartInstance.update();
+    return;
+  }
+
+  dashTrendChartInstance = new Chart(el('dashTrendChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Venituri', data: incomeData, backgroundColor: '#16a34a' },
+        { label: 'Cheltuieli', data: expenseData, backgroundColor: '#dc2626' }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } }
+    }
+  });
 }
 
 function renderPredictions() {
@@ -1618,10 +2022,13 @@ async function checkPendingBadge() {
 }
 
 function renderDashboard() {
+  syncDashPeriodUI();
   renderPendingConfirmations();
   renderTotalCompare();
   renderBalances();
+  renderCategoryChart();
   renderCategorySpend();
+  renderTrendChart();
   renderPredictions();
 }
 
@@ -1866,6 +2273,377 @@ el('budgetList').addEventListener('click', async (e) => {
     btn.disabled = false;
   }
 });
+
+// ================= ISTORIC =================
+let histPeriod = (() => {
+  const range = computeQuickPeriod('this-month');
+  return { type: 'this-month', from: range.from, to: range.to };
+})();
+let histSection = 'transactions';
+let histTransactions = [];
+let histTransfers = [];
+let histLoaded = false;
+let histLoading = false;
+let editingHistTxId = null;
+let editingHistTrId = null;
+let histTxFormType = 'Expense';
+
+function currencyFor(accountId) {
+  const a = accounts.find(a => String(a.id) === String(accountId));
+  return a ? a.currency : '';
+}
+
+function accountNameFor(accountId) {
+  const a = accounts.find(a => String(a.id) === String(accountId));
+  return a ? a.name : ('cont #' + accountId);
+}
+
+function sumByCurrency(rows, amountFn, currencyFn) {
+  const sums = new Map();
+  rows.forEach(r => {
+    const cur = currencyFn(r);
+    sums.set(cur, (sums.get(cur) || 0) + amountFn(r));
+  });
+  return sums;
+}
+
+function formatCurrencySums(sums) {
+  return Array.from(sums.entries()).map(([cur, sum]) => `${sum.toFixed(2)} ${cur}`).join(' · ');
+}
+
+function syncHistPeriodUI() {
+  document.querySelectorAll('#histPeriodQuick button').forEach(b => b.classList.toggle('active', b.dataset.period === histPeriod.type));
+  el('histPeriodFrom').value = histPeriod.from;
+  el('histPeriodTo').value = histPeriod.to;
+}
+
+el('histPeriodQuick').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-period]');
+  if (!btn) return;
+  const range = computeQuickPeriod(btn.dataset.period);
+  histPeriod = { type: btn.dataset.period, from: range.from, to: range.to };
+  syncHistPeriodUI();
+  loadHistData(true);
+});
+
+function applyHistCustomPeriod() {
+  const from = el('histPeriodFrom').value;
+  const to = el('histPeriodTo').value;
+  if (!from || !to || from > to) return;
+  histPeriod = { type: 'custom', from, to };
+  syncHistPeriodUI();
+  loadHistData(true);
+}
+el('histPeriodFrom').addEventListener('change', applyHistCustomPeriod);
+el('histPeriodTo').addEventListener('change', applyHistCustomPeriod);
+
+el('histAccount').addEventListener('change', () => loadHistData(true));
+el('histType').addEventListener('change', () => { populateHistCategorySelect(); renderHistLists(); });
+el('histCategory').addEventListener('change', renderHistLists);
+el('histSearch').addEventListener('input', debounce(renderHistLists, 200));
+
+el('histSectionToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-section]');
+  if (!btn) return;
+  histSection = btn.dataset.section;
+  document.querySelectorAll('#histSectionToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  el('histTransactionsPanel').classList.toggle('hidden', histSection !== 'transactions');
+  el('histTransfersPanel').classList.toggle('hidden', histSection !== 'transfers');
+});
+
+async function loadHistData(force) {
+  if (histLoading) return;
+  histLoading = true;
+  el('histError').classList.remove('show');
+  el('histLoading').classList.remove('hidden');
+
+  try {
+    const accountId = el('histAccount').value;
+    const [txData, trData, accountsData, categoriesData] = await Promise.all([
+      apiGet('getTransactions', { date_from: histPeriod.from, date_to: histPeriod.to, account_id: accountId || undefined }),
+      apiGet('getTransfers', { date_from: histPeriod.from, date_to: histPeriod.to }),
+      apiGet('getAccounts'),
+      apiGet('getCategories')
+    ]);
+    histTransactions = txData;
+    histTransfers = trData;
+    accounts = accountsData;
+    categories = categoriesData;
+    histLoaded = true;
+    populateHistFormSelects();
+    renderHistLists();
+  } catch (err) {
+    el('histError').textContent = 'Nu s-au putut încărca datele: ' + err.message;
+    el('histError').classList.add('show');
+  } finally {
+    histLoading = false;
+    el('histLoading').classList.add('hidden');
+  }
+}
+
+function populateHistFormSelects() {
+  const currentAccountFilter = el('histAccount').value;
+  const accountOptionsHtml = accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.currency})</option>`).join('');
+  el('histAccount').innerHTML = '<option value="">Toate conturile</option>' + accountOptionsHtml;
+  el('histAccount').value = currentAccountFilter;
+  el('histTxAccount').innerHTML = accountOptionsHtml;
+  el('histTrSourceAccount').innerHTML = accountOptionsHtml;
+  el('histTrDestAccount').innerHTML = accountOptionsHtml;
+  populateHistCategorySelect();
+  populateHistTxCategorySelect();
+}
+
+function populateHistCategorySelect() {
+  const type = el('histType').value;
+  const filtered = type ? categories.filter(c => c.type === type) : categories;
+  const current = el('histCategory').value;
+  el('histCategory').innerHTML = '<option value="">Toate categoriile</option>' +
+    filtered.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+  if (filtered.some(c => c.name === current)) el('histCategory').value = current;
+}
+
+function populateHistTxCategorySelect() {
+  const filtered = categories.filter(c => c.type === histTxFormType);
+  el('histTxCategory').innerHTML = filtered.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+}
+
+function getFilteredHistTransactions() {
+  const type = el('histType').value;
+  const category = el('histCategory').value;
+  const search = normalizeDescription(el('histSearch').value);
+  return histTransactions.filter(t => {
+    if (type && t.type !== type) return false;
+    if (category && t.category !== category) return false;
+    if (search && !normalizeDescription(t.description).includes(search)) return false;
+    return true;
+  }).sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id));
+}
+
+function getFilteredHistTransfers() {
+  const accountId = el('histAccount').value;
+  const search = normalizeDescription(el('histSearch').value);
+  return histTransfers.filter(tr => {
+    if (accountId && String(tr.source_account_id) !== String(accountId) && String(tr.dest_account_id) !== String(accountId)) return false;
+    if (search && !normalizeDescription(tr.description).includes(search)) return false;
+    return true;
+  }).sort((a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id));
+}
+
+function renderHistLists() {
+  renderHistTransactions();
+  renderHistTransfers();
+}
+
+function renderHistTransactions() {
+  const rows = getFilteredHistTransactions();
+  const container = el('histTxList');
+  const totalEl = el('histTxTotal');
+  if (rows.length === 0) {
+    container.innerHTML = '<div class="empty-state">Nicio tranzacție găsită.</div>';
+    totalEl.textContent = '';
+    return;
+  }
+  container.innerHTML = rows.map(t => {
+    const sign = t.type === 'Income' ? '+' : '−';
+    const colorClass = t.type === 'Income' ? 'hist-amount-income' : 'hist-amount-expense';
+    return `<div class="list-item" data-id="${t.id}">
+      <div class="list-item-top">
+        <div>
+          <div class="list-item-title">${escapeHtml(t.category)} · <span class="${colorClass}">${sign}${Number(t.amount).toFixed(2)} ${escapeHtml(currencyFor(t.account_id))}</span></div>
+          <div class="list-item-sub">${t.date} · ${escapeHtml(accountNameFor(t.account_id))}${t.description ? ' · ' + escapeHtml(t.description) : ''}</div>
+        </div>
+        <div class="list-item-actions">
+          <button type="button" class="icon-btn" data-edit="${t.id}">Editează</button>
+          <button type="button" class="icon-btn" data-delete="${t.id}">Șterge</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const sums = sumByCurrency(rows, t => t.type === 'Income' ? Number(t.amount) : -Number(t.amount), t => currencyFor(t.account_id));
+  totalEl.textContent = 'Total (net): ' + formatCurrencySums(sums);
+}
+
+function renderHistTransfers() {
+  const rows = getFilteredHistTransfers();
+  const container = el('histTrList');
+  const totalEl = el('histTrTotal');
+  if (rows.length === 0) {
+    container.innerHTML = '<div class="empty-state">Niciun transfer găsit.</div>';
+    totalEl.textContent = '';
+    return;
+  }
+  container.innerHTML = rows.map(tr => {
+    return `<div class="list-item" data-id="${tr.id}">
+      <div class="list-item-top">
+        <div>
+          <div class="list-item-title">${escapeHtml(accountNameFor(tr.source_account_id))} → ${escapeHtml(accountNameFor(tr.dest_account_id))}</div>
+          <div class="list-item-sub">${tr.date} · ${Number(tr.source_amount).toFixed(2)} ${escapeHtml(currencyFor(tr.source_account_id))} → ${Number(tr.dest_amount).toFixed(2)} ${escapeHtml(currencyFor(tr.dest_account_id))}${tr.description ? ' · ' + escapeHtml(tr.description) : ''}</div>
+        </div>
+        <div class="list-item-actions">
+          <button type="button" class="icon-btn" data-edit="${tr.id}">Editează</button>
+          <button type="button" class="icon-btn" data-delete="${tr.id}">Șterge</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const sums = sumByCurrency(rows, tr => Number(tr.source_amount), tr => currencyFor(tr.source_account_id));
+  totalEl.textContent = 'Total (sumă sursă): ' + formatCurrencySums(sums);
+}
+
+// ---------- Istoric: edit/delete tranzacții ----------
+el('histTxList').addEventListener('click', (e) => {
+  const editBtn = e.target.closest('button[data-edit]');
+  const delBtn = e.target.closest('button[data-delete]');
+  if (editBtn) startEditHistTx(editBtn.dataset.edit);
+  if (delBtn) deleteHistTx(delBtn.dataset.delete);
+});
+
+el('histTxTypeToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-type]');
+  if (!btn) return;
+  histTxFormType = btn.dataset.type;
+  document.querySelectorAll('#histTxTypeToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  populateHistTxCategorySelect();
+});
+
+function startEditHistTx(id) {
+  const t = histTransactions.find(t => String(t.id) === String(id));
+  if (!t) return;
+  editingHistTxId = t.id;
+  histTxFormType = t.type;
+  document.querySelectorAll('#histTxTypeToggle button').forEach(b => b.classList.toggle('active', b.dataset.type === t.type));
+  populateHistTxCategorySelect();
+  el('histTxAccount').value = t.account_id;
+  el('histTxCategory').value = t.category;
+  el('histTxDescription').value = t.description || '';
+  el('histTxAmount').value = t.amount;
+  el('histTxDate').value = t.date;
+  setFieldError('histTxAmountError', false);
+  el('histTxEditCard').classList.remove('hidden');
+  el('histTxEditCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeHistTxEdit() {
+  editingHistTxId = null;
+  el('histTxEditCard').classList.add('hidden');
+}
+el('histTxCancelEdit').addEventListener('click', closeHistTxEdit);
+
+el('histTxEditForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!editingHistTxId) return;
+  const accountId = el('histTxAccount').value;
+  const category = el('histTxCategory').value;
+  const description = el('histTxDescription').value.trim();
+  const amount = parseFloat(el('histTxAmount').value);
+  const date = el('histTxDate').value;
+
+  const amountInvalid = !(amount > 0);
+  setFieldError('histTxAmountError', amountInvalid);
+  if (!accountId || !category || amountInvalid || !date) return;
+
+  const btn = el('histTxSaveBtn');
+  btn.disabled = true;
+  try {
+    await apiPost('updateTransaction', {
+      id: editingHistTxId, account_id: accountId, date, type: histTxFormType, category, description, amount
+    });
+    showGlobalBanner('Tranzacția a fost actualizată.', 'success');
+    closeHistTxEdit();
+    await loadHistData(true);
+  } catch (err) {
+    showGlobalBanner('Eroare la salvare: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function deleteHistTx(id) {
+  if (!confirm('Ștergi definitiv această tranzacție? Acțiunea nu poate fi anulată.')) return;
+  try {
+    await apiPost('deleteTransaction', { id });
+    showGlobalBanner('Tranzacția a fost ștearsă.', 'success');
+    await loadHistData(true);
+  } catch (err) {
+    showGlobalBanner('Eroare la ștergere: ' + err.message, 'error');
+  }
+}
+
+// ---------- Istoric: edit/delete transferuri ----------
+el('histTrList').addEventListener('click', (e) => {
+  const editBtn = e.target.closest('button[data-edit]');
+  const delBtn = e.target.closest('button[data-delete]');
+  if (editBtn) startEditHistTr(editBtn.dataset.edit);
+  if (delBtn) deleteHistTr(delBtn.dataset.delete);
+});
+
+function startEditHistTr(id) {
+  const tr = histTransfers.find(t => String(t.id) === String(id));
+  if (!tr) return;
+  editingHistTrId = tr.id;
+  el('histTrSourceAccount').value = tr.source_account_id;
+  el('histTrDestAccount').value = tr.dest_account_id;
+  el('histTrSourceAmount').value = tr.source_amount;
+  el('histTrDestAmount').value = tr.dest_amount;
+  el('histTrDescription').value = tr.description || '';
+  el('histTrDate').value = tr.date;
+  setFieldError('histTrSourceAmountError', false);
+  setFieldError('histTrDestAmountError', false);
+  el('histTrEditCard').classList.remove('hidden');
+  el('histTrEditCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeHistTrEdit() {
+  editingHistTrId = null;
+  el('histTrEditCard').classList.add('hidden');
+}
+el('histTrCancelEdit').addEventListener('click', closeHistTrEdit);
+
+el('histTrEditForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!editingHistTrId) return;
+  const sourceId = el('histTrSourceAccount').value;
+  const destId = el('histTrDestAccount').value;
+  const sourceAmount = parseFloat(el('histTrSourceAmount').value);
+  const destAmount = parseFloat(el('histTrDestAmount').value);
+  const description = el('histTrDescription').value.trim();
+  const date = el('histTrDate').value;
+
+  const sourceAmountInvalid = !(sourceAmount > 0);
+  const destAmountInvalid = !(destAmount > 0);
+  setFieldError('histTrSourceAmountError', sourceAmountInvalid);
+  setFieldError('histTrDestAmountError', destAmountInvalid);
+  if (!sourceId || !destId || sourceId === destId || sourceAmountInvalid || destAmountInvalid || !date) return;
+
+  const btn = el('histTrSaveBtn');
+  btn.disabled = true;
+  try {
+    await apiPost('updateTransfer', {
+      id: editingHistTrId, date, source_account_id: sourceId, dest_account_id: destId,
+      source_amount: sourceAmount, dest_amount: destAmount, description
+    });
+    showGlobalBanner('Transferul a fost actualizat.', 'success');
+    closeHistTrEdit();
+    await loadHistData(true);
+  } catch (err) {
+    showGlobalBanner('Eroare la salvare: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function deleteHistTr(id) {
+  if (!confirm('Ștergi definitiv acest transfer? Acțiunea nu poate fi anulată.')) return;
+  try {
+    await apiPost('deleteTransfer', { id });
+    showGlobalBanner('Transferul a fost șters.', 'success');
+    await loadHistData(true);
+  } catch (err) {
+    showGlobalBanner('Eroare la ștergere: ' + err.message, 'error');
+  }
+}
 
 init();
 loadTransactionHistory();

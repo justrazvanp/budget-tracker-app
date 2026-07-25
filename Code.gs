@@ -303,6 +303,8 @@ function getTransactions(p) {
   if (lastRow < 2) return [];
   var filterId = (p && p.account_id !== undefined && p.account_id !== null && p.account_id !== '')
     ? String(p.account_id) : null;
+  var dateFrom = (p && p.date_from) ? String(p.date_from) : null;
+  var dateTo = (p && p.date_to) ? String(p.date_to) : null;
   return sheet.getRange(2, 1, lastRow - 1, 7).getValues()
     .filter(function (row) { return !filterId || String(row[1]) === filterId; })
     .map(function (row) {
@@ -315,25 +317,38 @@ function getTransactions(p) {
         description: row[5],
         amount: row[6]
       };
+    })
+    .filter(function (t) {
+      if (dateFrom && t.date < dateFrom) return false;
+      if (dateTo && t.date > dateTo) return false;
+      return true;
     });
 }
 
-function getTransfers() {
+function getTransfers(p) {
   var sheet = getSheet_(SHEETS.TRANSFERS);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 8).getValues().map(function (row) {
-    return {
-      id: row[0],
-      date: formatDate_(row[1]),
-      source_account_id: row[2],
-      dest_account_id: row[3],
-      source_amount: row[4],
-      dest_amount: row[5],
-      fx_rate: row[6],
-      description: row[7]
-    };
-  });
+  var dateFrom = (p && p.date_from) ? String(p.date_from) : null;
+  var dateTo = (p && p.date_to) ? String(p.date_to) : null;
+  return sheet.getRange(2, 1, lastRow - 1, 8).getValues()
+    .map(function (row) {
+      return {
+        id: row[0],
+        date: formatDate_(row[1]),
+        source_account_id: row[2],
+        dest_account_id: row[3],
+        source_amount: row[4],
+        dest_amount: row[5],
+        fx_rate: row[6],
+        description: row[7]
+      };
+    })
+    .filter(function (t) {
+      if (dateFrom && t.date < dateFrom) return false;
+      if (dateTo && t.date > dateTo) return false;
+      return true;
+    });
 }
 
 function getRecurring() {
@@ -487,6 +502,108 @@ function confirmTransaction(p) {
   return { id: Number(p.id), account_id: Number(accountId), balance: getAccountBalance_(accountId) };
 }
 
+// Deliberately preserves column 8 (recurring_id) — editing a transaction shouldn't sever its
+// link back to the Recurring row that generated it. Editing always implies confirmed = TRUE.
+function updateTransaction(p) {
+  requireFields_(p, ['id', 'account_id', 'date', 'type', 'category', 'amount']);
+  if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
+  var amount = Number(p.amount);
+  if (!(amount > 0)) throw new Error('amount must be a positive number');
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+  if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.TRANSACTIONS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown transaction id: ' + p.id);
+    var recurringId = sheet.getRange(rowIndex, 8).getValue();
+    sheet.getRange(rowIndex, 1, 1, 9).setValues([[
+      Number(p.id), Number(p.account_id), new Date(p.date), p.type, p.category, p.description || '',
+      amount, recurringId, true
+    ]]);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: Number(p.id), account_id: Number(p.account_id), balance: getAccountBalance_(p.account_id) };
+}
+
+function deleteTransaction(p) {
+  requireFields_(p, ['id']);
+  var accountId;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.TRANSACTIONS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown transaction id: ' + p.id);
+    accountId = sheet.getRange(rowIndex, 2).getValue();
+    sheet.deleteRow(rowIndex);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { id: Number(p.id), account_id: Number(accountId), balance: getAccountBalance_(accountId) };
+}
+
+function updateTransfer(p) {
+  requireFields_(p, ['id', 'date', 'source_account_id', 'dest_account_id', 'source_amount', 'dest_amount']);
+  var sourceAmount = Number(p.source_amount);
+  var destAmount = Number(p.dest_amount);
+  if (!(sourceAmount > 0) || !(destAmount > 0)) throw new Error('source_amount and dest_amount must be positive numbers');
+  var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
+  if (findRowIndexById_(accountsSheet, p.source_account_id) === -1) throw new Error('Unknown source_account_id: ' + p.source_account_id);
+  if (findRowIndexById_(accountsSheet, p.dest_account_id) === -1) throw new Error('Unknown dest_account_id: ' + p.dest_account_id);
+  var fxRate = destAmount / sourceAmount;
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.TRANSFERS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown transfer id: ' + p.id);
+    sheet.getRange(rowIndex, 1, 1, 8).setValues([[
+      Number(p.id), new Date(p.date), Number(p.source_account_id), Number(p.dest_account_id),
+      sourceAmount, destAmount, fxRate, p.description || ''
+    ]]);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return {
+    id: Number(p.id),
+    fx_rate: fxRate,
+    source_account: { account_id: Number(p.source_account_id), balance: getAccountBalance_(p.source_account_id) },
+    dest_account: { account_id: Number(p.dest_account_id), balance: getAccountBalance_(p.dest_account_id) }
+  };
+}
+
+function deleteTransfer(p) {
+  requireFields_(p, ['id']);
+  var sourceAccountId, destAccountId;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.TRANSFERS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown transfer id: ' + p.id);
+    var row = sheet.getRange(rowIndex, 1, 1, 8).getValues()[0];
+    sourceAccountId = row[2];
+    destAccountId = row[3];
+    sheet.deleteRow(rowIndex);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return {
+    id: Number(p.id),
+    source_account: { account_id: Number(sourceAccountId), balance: getAccountBalance_(sourceAccountId) },
+    dest_account: { account_id: Number(destAccountId), balance: getAccountBalance_(destAccountId) }
+  };
+}
+
 // Meant to run on a daily time-driven trigger (Apps Script editor > Triggers), not via the
 // web app — it is intentionally not registered in ACTIONS_. For each active Recurring row
 // whose day_of_month has been reached and hasn't already been generated this month, appends
@@ -557,7 +674,11 @@ var ACTIONS_ = {
   getBudgets: getBudgets,
   setBudget: setBudget,
   getPendingConfirmations: getPendingConfirmations,
-  confirmTransaction: confirmTransaction
+  confirmTransaction: confirmTransaction,
+  updateTransaction: updateTransaction,
+  deleteTransaction: deleteTransaction,
+  updateTransfer: updateTransfer,
+  deleteTransfer: deleteTransfer
 };
 
 function doGet(e) { return handleRequest_(e); }
