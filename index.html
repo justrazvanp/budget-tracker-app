@@ -1249,6 +1249,7 @@ const RESERVE_BUDGET_CATEGORY = 'Fond de rezervă';
 const EMERGENCY_FUND_ACCOUNT_ID = '2'; // "Fond de urgență"
 const SIGNAL_IDUNA_ACCOUNT_ID = '4'; // "Signal Iduna Investment"
 const RESERVE_ACCOUNT_ID = '3'; // "Fond de rezervă" (formerly "Economii pe termen lung / Neprevăzute")
+const CHECKING_ACCOUNT_ID = '1'; // "Checking"
 const ROMANIAN_MONTHS = ['Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',
   'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie'];
 
@@ -2406,6 +2407,9 @@ function renderRadialGauge(pctRaw, colorClass, subText) {
 // current month's actual spend (across every Expense category, limit or not) against the
 // sum of only the categories that actually have a limit set (Investiții/Fond de rezervă are
 // accumulation targets, not spending caps, so they're deliberately excluded from this total).
+// The budget's remaining room is only half the real constraint, though — you can't spend
+// money that isn't physically in Checking, even if the budget % would allow it. So the
+// gauge tracks whichever of the two (bugetRamas, soldChecking) is actually tighter.
 function renderTotalCompare() {
   const container = el('dashTotalCompare');
   const cm = currentMonthKey();
@@ -2423,14 +2427,34 @@ function renderTotalCompare() {
     return;
   }
 
-  const pct = (totalSpent / totalLimit) * 100;
-  const colorClass = pct > 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
-  const remaining = totalLimit - totalSpent;
-  const subText = remaining >= 0
-    ? `Poți cheltui încă ${remaining.toFixed(2)} lei din ${totalLimit.toFixed(2)} lei bugetați`
-    : `Ai depășit cu ${Math.abs(remaining).toFixed(2)} lei din ${totalLimit.toFixed(2)} lei bugetați`;
+  const bugetRamas = totalLimit - totalSpent;
+  const soldChecking = computeBalances().get(CHECKING_ACCOUNT_ID) || 0;
+  const disponibilReal = Math.min(bugetRamas, soldChecking);
 
-  container.innerHTML = renderRadialGauge(pct, colorClass, subText);
+  // The gauge's 100% mark is always "spent + whatever's actually left" — this equals
+  // totalLimit exactly when the budget is the binding constraint (disponibilReal ===
+  // bugetRamas), so the normal case is untouched; it shrinks below totalLimit whenever
+  // Checking is tighter, correctly showing more of the ring filled in.
+  const effectiveCapacity = totalSpent + disponibilReal;
+  const pctReal = effectiveCapacity > 0 ? (totalSpent / effectiveCapacity) * 100
+    : (totalSpent > 0 ? 100 + Math.abs(disponibilReal) : 100);
+
+  let colorClass;
+  let subText;
+  if (disponibilReal < 0) {
+    colorClass = 'over';
+    subText = `Ai depășit cu ${Math.abs(disponibilReal).toFixed(2)} lei`;
+  } else if (soldChecking < bugetRamas) {
+    // Cash is the real constraint here, not the budget — flag it even if the budget-only
+    // percentage would otherwise still read as comfortably green.
+    colorClass = 'warn';
+    subText = `Poți cheltui doar ${soldChecking.toFixed(2)} lei — limitat de soldul din Checking, nu de buget`;
+  } else {
+    colorClass = pctReal >= 80 ? 'warn' : 'ok';
+    subText = `Poți cheltui încă ${bugetRamas.toFixed(2)} lei din ${totalLimit.toFixed(2)} lei bugetați`;
+  }
+
+  container.innerHTML = renderRadialGauge(pctReal, colorClass, subText);
 }
 
 function renderBalances() {
