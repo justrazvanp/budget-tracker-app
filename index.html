@@ -1059,6 +1059,7 @@ let accounts = [];
 let categories = [];
 let transactions = [];
 let addTabBudgets = [];
+let addTabRecurring = [];
 let descriptionIndex = new Map();
 let currentMode = 'transaction';
 let currentType = 'Expense';
@@ -1132,30 +1133,40 @@ function debounce(fn, delay) {
   };
 }
 
-// Shared by Dashboard and Adaugă (budget-warning check): the "income base" that a budget
-// percent gets multiplied against. Current month's income wins; if nothing's been logged
-// yet this month, falls back to the average of the last 3 complete prior months.
-// Income for one specific month; falls back to the average of the 3 months strictly
-// before it when that month has nothing logged yet.
-function computeMonthIncomeBase(transactionsList, monthKeyStr) {
+// Shared by Dashboard, Setări și Adaugă (budget-warning check) și de motorul de traiectorie:
+// "baza de venit" pe care se aplică un procent de buget. Ordinea de calcul, pentru orice lună:
+// 1. Venituri reale înregistrate chiar în acea lună - dacă există, câștigă ele.
+// 2. Altfel, dacă există VREUN venit real în tot istoricul, media ultimelor 3 luni pline
+//    dinaintea lunii respective (poate fi 0 dacă acele 3 luni chiar n-au avut venituri).
+// 3. Altfel (cont nou, ZERO venituri reale înregistrate vreodată): suma itemilor activi din
+//    Recurring de tip Venit - Lunar contribuie suma integrală, Anual contribuie suma/12.
+function computeMonthIncomeBase(transactionsList, monthKeyStr, recurringList) {
   const monthIncome = transactionsList
     .filter(t => t.type === 'Income' && monthKey(t.date) === monthKeyStr)
     .reduce((acc, t) => acc + Number(t.amount), 0);
   if (monthIncome > 0) return monthIncome;
 
-  const priorMonths = [];
-  let probe = monthKeyStr;
-  for (let i = 0; i < 3; i++) { probe = addMonths(probe, -1); priorMonths.push(probe); }
-  const total = transactionsList
-    .filter(t => t.type === 'Income' && priorMonths.includes(monthKey(t.date)))
-    .reduce((acc, t) => acc + Number(t.amount), 0);
-  return total / 3;
+  const hasAnyRealIncomeEver = transactionsList.some(t => t.type === 'Income');
+  if (hasAnyRealIncomeEver) {
+    const priorMonths = [];
+    let probe = monthKeyStr;
+    for (let i = 0; i < 3; i++) { probe = addMonths(probe, -1); priorMonths.push(probe); }
+    const total = transactionsList
+      .filter(t => t.type === 'Income' && priorMonths.includes(monthKey(t.date)))
+      .reduce((acc, t) => acc + Number(t.amount), 0);
+    return total / 3;
+  }
+
+  if (!recurringList || !recurringList.length) return 0;
+  return recurringList
+    .filter(r => r.active && r.type === 'Income')
+    .reduce((acc, r) => acc + (r.frequency === 'Anual' ? Number(r.amount) / 12 : Number(r.amount)), 0);
 }
 
 // Used where the income base is always "the current month" regardless of any Dashboard
 // period selection (Predicție / Total compare, and the Adaugă-tab over-budget notice).
-function computeIncomeBase(transactionsList) {
-  return computeMonthIncomeBase(transactionsList, currentMonthKey());
+function computeIncomeBase(transactionsList, recurringList) {
+  return computeMonthIncomeBase(transactionsList, currentMonthKey(), recurringList);
 }
 
 function countMonthsInPeriod(from, to) {
@@ -1167,12 +1178,12 @@ function countMonthsInPeriod(from, to) {
 // Used by the "Cheltuieli pe categorie" section, which follows the Dashboard's period
 // selector: a single-month period gets that specific month's own income base, while a
 // period spanning N months scales today's monthly base by N.
-function computeIncomeBaseForPeriod(transactionsList, from, to) {
+function computeIncomeBaseForPeriod(transactionsList, from, to, recurringList) {
   const monthsInPeriod = countMonthsInPeriod(from, to);
   if (monthsInPeriod <= 1) {
-    return computeMonthIncomeBase(transactionsList, monthKey(from));
+    return computeMonthIncomeBase(transactionsList, monthKey(from), recurringList);
   }
-  return computeMonthIncomeBase(transactionsList, currentMonthKey()) * monthsInPeriod;
+  return computeMonthIncomeBase(transactionsList, currentMonthKey(), recurringList) * monthsInPeriod;
 }
 
 function budgetLimitInLei(percent, incomeBase) {
@@ -1531,6 +1542,11 @@ async function loadAddTabBudgets() {
   } catch (err) {
     addTabBudgets = [];
   }
+  try {
+    addTabRecurring = await apiGet('getRecurring');
+  } catch (err) {
+    addTabRecurring = [];
+  }
 }
 
 function computeBalancesFromLists(accountsList, txList, trList) {
@@ -1604,7 +1620,7 @@ function checkBudgetOverrun(category, type) {
   if (type !== 'Expense') return null;
   const budget = addTabBudgets.find(b => b.category === category);
   if (!budget) return null;
-  const incomeBase = computeIncomeBase(transactions);
+  const incomeBase = computeIncomeBase(transactions, addTabRecurring);
   if (!(incomeBase > 0)) return null;
   const limitLei = budgetLimitInLei(budget.percent, incomeBase);
   if (!(limitLei > 0)) return null;
@@ -2195,7 +2211,7 @@ function renderTotalCompare() {
       <div class="sub">Predicție totală · Nicio țintă de buget setată încă<span class="period-lock-badge">mereu luna curentă</span></div>`;
     return;
   }
-  const incomeBase = computeIncomeBase(dash.transactions);
+  const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
   if (!(incomeBase > 0)) {
     container.innerHTML = `<div class="big">${totalPredicted.toFixed(2)}</div>
       <div class="sub">Predicție totală · Nu există încă venituri pentru a calcula țintele în lei<span class="period-lock-badge">mereu luna curentă</span></div>`;
@@ -2231,7 +2247,7 @@ function renderCategorySpend() {
     container.innerHTML = '<div class="empty-state">Nicio cheltuială în perioada selectată.</div>';
     return;
   }
-  const incomeBase = computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to);
+  const incomeBase = computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to, dash.recurring);
   const rows = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
   container.innerHTML = rows.map(([category, sum]) => {
     const limit = getBudgetLimitLei(category, incomeBase);
@@ -2376,7 +2392,7 @@ function computeAccountProjection(account, monthsAhead, extra) {
   const accountRecurring = dash.recurring.filter(r => String(r.account_id) === String(account.id));
   const expenseCategories = categories.filter(c => c.type === 'Expense').map(c => c.name);
 
-  const incomeBase = computeMonthIncomeBase(accountTx, currentMonthKey());
+  const incomeBase = computeMonthIncomeBase(accountTx, currentMonthKey(), accountRecurring);
   const startingBalance = computeBalances().get(String(account.id)) || 0;
 
   const months = [];
@@ -2401,7 +2417,7 @@ function computeAccountProjection(account, monthsAhead, extra) {
 // target? Uses the pooled (all-accounts) income base and prediction, matching how budget
 // targets are defined everywhere else — null when the category has no target at all.
 function checkSimulatedBudgetImpact(category, extraMonthlyAmount) {
-  const incomeBase = computeIncomeBase(dash.transactions);
+  const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
   const limit = getBudgetLimitLei(category, incomeBase);
   if (limit === null) return null;
 
@@ -2415,7 +2431,7 @@ function checkSimulatedBudgetImpact(category, extraMonthlyAmount) {
 // projections, which categories would exceed their target at the (constant) estimated
 // income, and the investment target vs. the recent actual transfer run-rate.
 function computeTrajectory(monthsAhead) {
-  const incomeBase = computeIncomeBase(dash.transactions);
+  const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
   const predictions = computePredictions();
   const budgetsByCategory = new Map(dash.budgets.map(b => [b.category, Number(b.percent)]));
 
@@ -2445,7 +2461,7 @@ function renderInvestmentSection() {
   const container = el('dashInvestments');
 
   const budget = dash.budgets.find(b => b.category === INVESTMENT_BUDGET_CATEGORY);
-  const incomeBase = budget ? computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to) : 0;
+  const incomeBase = budget ? computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to, dash.recurring) : 0;
   const target = budget ? budgetLimitInLei(budget.percent, incomeBase) : null;
 
   if (target === null || !(target > 0)) {
@@ -2575,7 +2591,7 @@ function renderTrendChart() {
 }
 
 function renderPredictions() {
-  const incomeBase = computeIncomeBase(dash.transactions);
+  const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
   const predictions = computePredictions();
   const container = el('dashPredictions');
 
