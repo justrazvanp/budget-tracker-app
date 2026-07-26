@@ -476,10 +476,19 @@
   .bar-pct { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
 
   .total-compare { text-align: center; }
-  .total-compare .big { font-size: 1.6rem; font-weight: 800; }
-  .total-compare .big.over { color: var(--expense); }
-  .total-compare .big.ok { color: var(--income); }
-  .total-compare .sub { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
+  .radial-gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .radial-gauge { position: relative; width: 140px; height: 140px; }
+  .radial-gauge svg { width: 100%; height: 100%; }
+  .radial-gauge-track { stroke: var(--bg); }
+  .radial-gauge-arc.ok { stroke: var(--income); }
+  .radial-gauge-arc.warn { stroke: #d97706; }
+  .radial-gauge-arc.over { stroke: var(--expense); }
+  .radial-gauge-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: 800; }
+  .radial-gauge-pct.ok { color: var(--income); }
+  .radial-gauge-pct.warn { color: #d97706; }
+  .radial-gauge-pct.over { color: var(--expense); }
+  .radial-gauge-sub { font-size: 0.85rem; color: var(--muted); max-width: 240px; }
 
   /* ===== Settings: recurring list + budget list ===== */
   .list-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
@@ -1230,10 +1239,16 @@ const BUDGET_EXCLUDED_CATEGORIES = ['Corecții', 'Datorii/Împrumut', 'Cheltuiel
 // Reserved Budgets.category value — not a real Expense category from getCategories, tracked
 // against Transfers into the investment accounts instead of Transactions.
 const INVESTMENT_BUDGET_CATEGORY = 'Investiții';
-// Same shape as INVESTMENT_BUDGET_CATEGORY, but tracked against Transfers into the
-// "Economii pe termen lung / Neprevăzute" account instead of the investment accounts.
+// Same shape as INVESTMENT_BUDGET_CATEGORY, but tracked against Transfers into the reserve
+// account (RESERVE_ACCOUNT_ID below) instead of the investment accounts.
 const RESERVE_BUDGET_CATEGORY = 'Fond de rezervă';
-const RESERVE_ACCOUNT_NAME = 'Economii pe termen lung / Neprevăzute';
+// Well-known account ids, seeded once by setupSheets() in Code.gs and never reassigned
+// afterwards — stable, unlike the account's display name (which the user can freely rename
+// in the sheet, e.g. account 3 went from "Economii pe termen lung / Neprevăzute" to "Fond de
+// rezervă"). Identify these accounts by id everywhere, never by name.
+const EMERGENCY_FUND_ACCOUNT_ID = '2'; // "Fond de urgență"
+const SIGNAL_IDUNA_ACCOUNT_ID = '4'; // "Signal Iduna Investment"
+const RESERVE_ACCOUNT_ID = '3'; // "Fond de rezervă" (formerly "Economii pe termen lung / Neprevăzute")
 const ROMANIAN_MONTHS = ['Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',
   'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie'];
 
@@ -2364,28 +2379,58 @@ function computePredictions() {
   return computeCategoryPredictions(dash.transactions, dash.recurring, expenseCategories);
 }
 
-function renderTotalCompare() {
-  const predictions = computePredictions();
-  const totalPredicted = predictions.reduce((acc, p) => acc + (p.amount || 0), 0);
-  const hasBudgets = dash.budgets.length > 0;
-  const container = el('dashTotalCompare');
+// Radial (ring) progress indicator — a plain SVG circle with a colored arc drawn via
+// stroke-dasharray/stroke-dashoffset, no charting library needed. `pctRaw` drives the arc
+// (visually capped at 100%) and the label text (shown uncapped, so going over budget still
+// reads as e.g. "134%" rather than silently clamping).
+function renderRadialGauge(pctRaw, colorClass, subText) {
+  const radius = 52;
+  const circumference = 2 * Math.PI * radius;
+  const pctForArc = Math.max(0, Math.min(pctRaw, 100));
+  const offset = circumference * (1 - pctForArc / 100);
+  return `<div class="radial-gauge-wrap">
+    <div class="radial-gauge">
+      <svg viewBox="0 0 120 120">
+        <circle class="radial-gauge-track" cx="60" cy="60" r="${radius}" fill="none" stroke-width="12"></circle>
+        <circle class="radial-gauge-arc ${colorClass}" cx="60" cy="60" r="${radius}" fill="none" stroke-width="12"
+          stroke-linecap="round" stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"
+          transform="rotate(-90 60 60)"></circle>
+      </svg>
+      <div class="radial-gauge-pct ${colorClass}">${Math.round(pctRaw)}%</div>
+    </div>
+    <div class="radial-gauge-sub">${escapeHtml(subText)}<span class="period-lock-badge">mereu luna curentă</span></div>
+  </div>`;
+}
 
-  if (!hasBudgets) {
-    container.innerHTML = `<div class="big">${totalPredicted.toFixed(2)}</div>
-      <div class="sub">Predicție totală · Nicio țintă de buget setată încă<span class="period-lock-badge">mereu luna curentă</span></div>`;
-    return;
-  }
+// Replaces the old "Predicție totală vs. total ținte de buget" text card — always the real
+// current month's actual spend (across every Expense category, limit or not) against the
+// sum of only the categories that actually have a limit set (Investiții/Fond de rezervă are
+// accumulation targets, not spending caps, so they're deliberately excluded from this total).
+function renderTotalCompare() {
+  const container = el('dashTotalCompare');
+  const cm = currentMonthKey();
   const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
-  if (!(incomeBase > 0)) {
-    container.innerHTML = `<div class="big">${totalPredicted.toFixed(2)}</div>
-      <div class="sub">Predicție totală · Nu există încă venituri pentru a calcula țintele în lei<span class="period-lock-badge">mereu luna curentă</span></div>`;
+
+  const totalSpent = dash.transactions
+    .filter(t => t.type === 'Expense' && monthKey(t.date) === cm)
+    .reduce((acc, t) => acc + Number(t.amount), 0);
+
+  const expenseCategoryNames = categories.filter(c => c.type === 'Expense').map(c => c.name);
+  const totalLimit = expenseCategoryNames.reduce((acc, cat) => acc + (getBudgetLimitLei(cat, incomeBase) || 0), 0);
+
+  if (!(totalLimit > 0)) {
+    container.innerHTML = `<div class="empty-state">Nu ai încă limite de buget setate<span class="period-lock-badge">mereu luna curentă</span></div>`;
     return;
   }
-  const totalPercent = dash.budgets.reduce((acc, b) => acc + Number(b.percent), 0);
-  const totalBudget = budgetLimitInLei(totalPercent, incomeBase);
-  const over = totalPredicted > totalBudget;
-  container.innerHTML = `<div class="big ${over ? 'over' : 'ok'}">${totalPredicted.toFixed(2)} / ${totalBudget.toFixed(2)}</div>
-    <div class="sub">Predicție totală vs. total ținte de buget (${totalPercent.toFixed(0)}% din venit)<span class="period-lock-badge">mereu luna curentă</span></div>`;
+
+  const pct = (totalSpent / totalLimit) * 100;
+  const colorClass = pct > 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
+  const remaining = totalLimit - totalSpent;
+  const subText = remaining >= 0
+    ? `Poți cheltui încă ${remaining.toFixed(2)} lei din ${totalLimit.toFixed(2)} lei bugetați`
+    : `Ai depășit cu ${Math.abs(remaining).toFixed(2)} lei din ${totalLimit.toFixed(2)} lei bugetați`;
+
+  container.innerHTML = renderRadialGauge(pct, colorClass, subText);
 }
 
 function renderBalances() {
@@ -2430,11 +2475,11 @@ function renderCategorySpend() {
   }).join('');
 }
 
-// Identified by name rather than a fixed id, so this keeps working if accounts are ever
-// reordered or the sheet is reseeded.
+// Identified by id (stable) rather than name — the user can freely rename any account in the
+// sheet (as happened with the reserve account below) without breaking this lookup.
 function getInvestmentAccountIds(accountsList) {
   return accountsList
-    .filter(a => a.name === 'Fond de urgență' || a.name === 'Signal Iduna Investment')
+    .filter(a => String(a.id) === EMERGENCY_FUND_ACCOUNT_ID || String(a.id) === SIGNAL_IDUNA_ACCOUNT_ID)
     .map(a => String(a.id));
 }
 
@@ -2472,9 +2517,9 @@ function computeRecentInvestmentMonthlyAverage() {
 }
 
 // Fond de rezervă mirrors the Investiții primitives above exactly, just tracked against
-// transfers into a single account (RESERVE_ACCOUNT_NAME) instead of the investment accounts.
+// transfers into a single account (RESERVE_ACCOUNT_ID) instead of the investment accounts.
 function getReserveAccountId(accountsList) {
-  const account = accountsList.find(a => a.name === RESERVE_ACCOUNT_NAME);
+  const account = accountsList.find(a => String(a.id) === RESERVE_ACCOUNT_ID);
   return account ? String(account.id) : null;
 }
 
