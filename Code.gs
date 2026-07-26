@@ -141,6 +141,91 @@ function setupCategoryRestrictionMigration() {
   }
 }
 
+// One-off migration: splits the old "Divertisment/Vacanțe" category into two — "Divertisment"
+// (free, any account, like before) and a new "Vacanțe" restricted to the "Economii pe termen
+// lung / Neprevăzute" account (id 3), same restriction as "Cheltuieli pe termen lung/
+// Neprevăzute". Every existing Transactions/Recurring/Budgets row tagged "Divertisment/
+// Vacanțe" moves to "Divertisment" (the free default) — nothing here guesses which of them
+// were actually vacation spending; reclassify those manually from Istoric afterwards. Also
+// drops any existing Budgets row for "Cheltuieli pe termen lung/Neprevăzute", since that
+// category becomes budget-target-excluded. Safe to re-run — each step no-ops once already
+// applied. Run once from the editor, then check the execution log (View > Executions or
+// View > Logs) for the full list of rows that were touched.
+function migrateDivertismentVacanta() {
+  var OLD_NAME = 'Divertisment/Vacanțe';
+  var NEW_NAME = 'Divertisment';
+  var VACATION_NAME = 'Vacanțe';
+  var LONG_TERM_ACCOUNT_ID = 3; // "Economii pe termen lung / Neprevăzute"
+  var changed = [];
+
+  // 1. Categories: rename the old row, add the new restricted "Vacanțe" row.
+  var catSheet = getSheet_(SHEETS.CATEGORIES);
+  var catLastRow = catSheet.getLastRow();
+  if (catLastRow > 1) {
+    var catRows = catSheet.getRange(2, 1, catLastRow - 1, 2).getValues();
+    var hasVacation = false;
+    for (var c = 0; c < catRows.length; c++) {
+      if (catRows[c][1] === OLD_NAME) {
+        catSheet.getRange(2 + c, 2).setValue(NEW_NAME);
+        changed.push('Categories row ' + (2 + c) + ': "' + OLD_NAME + '" -> "' + NEW_NAME + '"');
+      }
+      if (catRows[c][1] === VACATION_NAME) hasVacation = true;
+    }
+    if (!hasVacation) {
+      catSheet.appendRow(['Expense', VACATION_NAME, LONG_TERM_ACCOUNT_ID]);
+      changed.push('Categories: added new row "' + VACATION_NAME + '" (restricted to account ' + LONG_TERM_ACCOUNT_ID + ')');
+    }
+  }
+
+  // 2. Transactions.category (column 5)
+  var txSheet = getSheet_(SHEETS.TRANSACTIONS);
+  var txLastRow = txSheet.getLastRow();
+  if (txLastRow > 1) {
+    var txRows = txSheet.getRange(2, 1, txLastRow - 1, 7).getValues();
+    for (var t = 0; t < txRows.length; t++) {
+      if (txRows[t][4] === OLD_NAME) {
+        txSheet.getRange(2 + t, 5).setValue(NEW_NAME);
+        changed.push('Transactions id ' + txRows[t][0] + ' (' + formatDate_(txRows[t][2]) + ', ' + txRows[t][6] + ' lei): "' + OLD_NAME + '" -> "' + NEW_NAME + '"');
+      }
+    }
+  }
+
+  // 3. Recurring.category (column 4)
+  var recSheet = getSheet_(SHEETS.RECURRING);
+  var recLastRow = recSheet.getLastRow();
+  if (recLastRow > 1) {
+    var recRows = recSheet.getRange(2, 1, recLastRow - 1, 6).getValues();
+    for (var r = 0; r < recRows.length; r++) {
+      if (recRows[r][3] === OLD_NAME) {
+        recSheet.getRange(2 + r, 4).setValue(NEW_NAME);
+        changed.push('Recurring id ' + recRows[r][0] + ' (' + recRows[r][4] + ', ' + recRows[r][5] + ' lei): "' + OLD_NAME + '" -> "' + NEW_NAME + '"');
+      }
+    }
+  }
+
+  // 4. Budgets: rename the "Divertisment/Vacanțe" percent row if present, and drop the
+  // "Cheltuieli pe termen lung/Neprevăzute" row entirely (now budget-target-excluded).
+  // Iterating backwards so deleteRow never shifts an index we haven't visited yet.
+  var budSheet = getSheet_(SHEETS.BUDGETS);
+  var budLastRow = budSheet.getLastRow();
+  if (budLastRow > 1) {
+    var budRows = budSheet.getRange(2, 1, budLastRow - 1, 2).getValues();
+    for (var b = budRows.length - 1; b >= 0; b--) {
+      if (budRows[b][0] === OLD_NAME) {
+        budSheet.getRange(2 + b, 1).setValue(NEW_NAME);
+        changed.push('Budgets: "' + OLD_NAME + '" -> "' + NEW_NAME + '" (percent ' + budRows[b][1] + ' kept)');
+      } else if (budRows[b][0] === 'Cheltuieli pe termen lung/Neprevăzute') {
+        budSheet.deleteRow(2 + b);
+        changed.push('Budgets: deleted row for "Cheltuieli pe termen lung/Neprevăzute" (was ' + budRows[b][1] + '%) — now excluded from budget targets');
+      }
+    }
+  }
+
+  Logger.log('Migration finished. %s row(s) changed:', changed.length);
+  changed.forEach(function (line) { Logger.log(line); });
+  return changed;
+}
+
 // Adds frequency/month_of_year to Recurring and renames column 9 from
 // last_generated_month to last_generated_period (same column, now dual-purpose: "YYYY-MM"
 // for Lunar items, "YYYY" for Anual items — unaffected either way, since generation just
@@ -671,7 +756,7 @@ function updateRecurringTransfer(p) {
   return { id: Number(p.id) };
 }
 
-var BUDGET_EXCLUDED_CATEGORIES_ = ['Corecții', 'Datorii/Împrumut'];
+var BUDGET_EXCLUDED_CATEGORIES_ = ['Corecții', 'Datorii/Împrumut', 'Cheltuieli pe termen lung/Neprevăzute', 'Vacanțe'];
 
 function getBudgets() {
   var sheet = getSheet_(SHEETS.BUDGETS);

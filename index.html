@@ -872,6 +872,11 @@
         <div id="dashInvestments"></div>
       </div>
 
+      <div class="card dash-mobile-only" id="dashReserveCard">
+        <div class="section-title">Fond de rezervă</div>
+        <div id="dashReserve"></div>
+      </div>
+
       <div class="card dash-mobile-only" id="dashTrendChartCard">
         <div class="section-title">Evoluție lunară (venituri vs. cheltuieli)</div>
         <div class="chart-wrap"><canvas id="dashTrendChart"></canvas></div>
@@ -1218,10 +1223,17 @@ let fxDebounceHandle = null;
 const TRANSACTION_HISTORY_LIMIT = 200;
 const QUICK_CATEGORY_LIMIT = 4;
 const DESCRIPTION_SUGGESTION_LIMIT = 8;
-const BUDGET_EXCLUDED_CATEGORIES = ['Corecții', 'Datorii/Împrumut'];
+// "Cheltuieli pe termen lung/Neprevăzute" and "Vacanțe" are large/rare, irregular expenses —
+// a monthly % target doesn't make sense for either, so both stay excluded like Corecții and
+// Datorii/Împrumut.
+const BUDGET_EXCLUDED_CATEGORIES = ['Corecții', 'Datorii/Împrumut', 'Cheltuieli pe termen lung/Neprevăzute', 'Vacanțe'];
 // Reserved Budgets.category value — not a real Expense category from getCategories, tracked
 // against Transfers into the investment accounts instead of Transactions.
 const INVESTMENT_BUDGET_CATEGORY = 'Investiții';
+// Same shape as INVESTMENT_BUDGET_CATEGORY, but tracked against Transfers into the
+// "Economii pe termen lung / Neprevăzute" account instead of the investment accounts.
+const RESERVE_BUDGET_CATEGORY = 'Fond de rezervă';
+const RESERVE_ACCOUNT_NAME = 'Economii pe termen lung / Neprevăzute';
 const ROMANIAN_MONTHS = ['Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie',
   'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie'];
 
@@ -2156,6 +2168,7 @@ function renderDashboardPeriodSections() {
   renderCategoryChart();
   renderCategorySpend();
   renderInvestmentSection();
+  renderReserveSection();
   renderTrendChart();
   renderYtdTable();
   renderTrendChartExt();
@@ -2458,6 +2471,46 @@ function computeRecentInvestmentMonthlyAverage() {
   return sum / windowMonths.length;
 }
 
+// Fond de rezervă mirrors the Investiții primitives above exactly, just tracked against
+// transfers into a single account (RESERVE_ACCOUNT_NAME) instead of the investment accounts.
+function getReserveAccountId(accountsList) {
+  const account = accountsList.find(a => a.name === RESERVE_ACCOUNT_NAME);
+  return account ? String(account.id) : null;
+}
+
+function computePeriodReserve(from, to) {
+  const reserveAccountId = getReserveAccountId(dash.accounts);
+  if (!reserveAccountId) return 0;
+  return dash.transfers
+    .filter(tr => String(tr.dest_account_id) === reserveAccountId)
+    .filter(tr => tr.date >= from && tr.date <= to)
+    .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+}
+
+function computeRecentReserveMonthlyAverage() {
+  const reserveAccountId = getReserveAccountId(dash.accounts);
+  if (!reserveAccountId) return null;
+  const cm = currentMonthKey();
+  const pastTransfers = dash.transfers.filter(tr =>
+    String(tr.dest_account_id) === reserveAccountId && monthKey(tr.date) !== cm);
+  if (pastTransfers.length === 0) return null;
+
+  const earliestMonth = pastTransfers.map(tr => monthKey(tr.date)).sort()[0];
+  const windowMonths = [];
+  let probe = cm;
+  while (windowMonths.length < 6) {
+    probe = addMonths(probe, -1);
+    if (probe < earliestMonth) break;
+    windowMonths.push(probe);
+  }
+  if (windowMonths.length === 0) return null;
+
+  const sum = pastTransfers
+    .filter(tr => windowMonths.includes(monthKey(tr.date)))
+    .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+  return sum / windowMonths.length;
+}
+
 const PROJECTION_MONTHS_DEFAULT = 6;
 
 // Pre-fetches an FX rate for every distinct currency pair among active, cross-currency
@@ -2598,13 +2651,21 @@ function computeTrajectory(monthsAhead) {
     ? budgetLimitInLei(investmentPercent, incomeBase) : null;
   const investmentRecentAvg = computeRecentInvestmentMonthlyAverage();
 
+  const reservePercent = budgetsByCategory.get(RESERVE_BUDGET_CATEGORY);
+  const reserveTarget = (reservePercent !== undefined && incomeBase > 0)
+    ? budgetLimitInLei(reservePercent, incomeBase) : null;
+  const reserveRecentAvg = computeRecentReserveMonthlyAverage();
+
   const accountProjections = dash.accounts.map(account => computeAccountProjection(account, monthsAhead));
 
   const monthKeys = [];
   let probe = currentMonthKey();
   for (let i = 1; i <= monthsAhead; i++) { probe = addMonths(probe, 1); monthKeys.push(probe); }
 
-  return { incomeBase, categoryProjection, investmentTarget, investmentRecentAvg, accountProjections, monthKeys };
+  return {
+    incomeBase, categoryProjection, investmentTarget, investmentRecentAvg,
+    reserveTarget, reserveRecentAvg, accountProjections, monthKeys
+  };
 }
 
 function renderInvestmentSection() {
@@ -2630,6 +2691,33 @@ function renderInvestmentSection() {
     <div class="bar-row-top"><span>Investit</span><span>${invested.toFixed(2)}</span></div>
     <div class="bar-track"><div class="bar-fill ${met ? 'ok' : 'over'}" style="width:${Math.min(pct, 100)}%"></div></div>
     <div class="bar-pct">${invested.toFixed(2)} din ${target.toFixed(2)} lei investiți (${pct.toFixed(0)}%)</div>
+  </div>`;
+}
+
+// Mirrors renderInvestmentSection exactly, just backed by computePeriodReserve/
+// RESERVE_BUDGET_CATEGORY instead of the investment-account primitives.
+function renderReserveSection() {
+  const saved = computePeriodReserve(dashPeriod.from, dashPeriod.to);
+  const container = el('dashReserve');
+
+  const budget = dash.budgets.find(b => b.category === RESERVE_BUDGET_CATEGORY);
+  const incomeBase = budget ? computeIncomeBaseForPeriod(dash.transactions, dashPeriod.from, dashPeriod.to, dash.recurring) : 0;
+  const target = budget ? budgetLimitInLei(budget.percent, incomeBase) : null;
+
+  if (target === null || !(target > 0)) {
+    container.innerHTML = `<div class="bar-row">
+      <div class="bar-row-top"><span>Economisit</span><span>${saved.toFixed(2)}</span></div>
+    </div>`;
+    return;
+  }
+
+  const pct = (saved / target) * 100;
+  // Same inverted rule as Investiții: reaching/exceeding the target is the goal.
+  const met = saved >= target;
+  container.innerHTML = `<div class="bar-row">
+    <div class="bar-row-top"><span>Economisit</span><span>${saved.toFixed(2)}</span></div>
+    <div class="bar-track"><div class="bar-fill ${met ? 'ok' : 'over'}" style="width:${Math.min(pct, 100)}%"></div></div>
+    <div class="bar-pct">${saved.toFixed(2)} din ${target.toFixed(2)} lei economisiți (${pct.toFixed(0)}%)</div>
   </div>`;
 }
 
@@ -2773,6 +2861,19 @@ function buildInvestmentMonthMap() {
   return map;
 }
 
+// monthKey -> summed amount transferred into the reserve account.
+function buildReserveMonthMap() {
+  const reserveAccountId = getReserveAccountId(dash.accounts);
+  const map = new Map();
+  if (!reserveAccountId) return map;
+  dash.transfers.forEach(tr => {
+    if (String(tr.dest_account_id) !== reserveAccountId) return;
+    const mk = monthKey(tr.date);
+    map.set(mk, (map.get(mk) || 0) + Number(tr.dest_amount));
+  });
+  return map;
+}
+
 function budgetTableAmountCell(value, colspan) {
   const attr = colspan ? ` colspan="${colspan}"` : '';
   if (!value) return `<td class="budget-table-empty"${attr}>–</td>`;
@@ -2799,6 +2900,7 @@ function renderMtdTable() {
   const incomeMatrix = buildCategoryMonthMatrix('Income');
   const expenseMatrix = buildCategoryMonthMatrix('Expense');
   const investMonthMap = buildInvestmentMonthMap();
+  const reserveMonthMap = buildReserveMonthMap();
 
   const actualFor = (matrix, cat) => (matrix.get(cat) && matrix.get(cat).get(cm)) || 0;
 
@@ -2832,11 +2934,18 @@ function renderMtdTable() {
   const investActual = investMonthMap.get(cm) || 0;
   const investTarget = getBudgetLimitLei(INVESTMENT_BUDGET_CATEGORY, incomeBase);
   const investRowHtml = categoryRow(INVESTMENT_BUDGET_CATEGORY, investActual, investTarget, true);
+  const reserveActual = reserveMonthMap.get(cm) || 0;
+  const reserveTarget = getBudgetLimitLei(RESERVE_BUDGET_CATEGORY, incomeBase);
+  const reserveRowHtml = categoryRow(RESERVE_BUDGET_CATEGORY, reserveActual, reserveTarget, true);
 
   const totalIncome = incomeCats.reduce((acc, cat) => acc + actualFor(incomeMatrix, cat), 0);
   const totalExpense = expenseCats.reduce((acc, cat) => acc + actualFor(expenseMatrix, cat), 0);
-  const expensePercentSum = dash.budgets.filter(b => b.category !== INVESTMENT_BUDGET_CATEGORY).reduce((acc, b) => acc + Number(b.percent), 0);
+  const nonExpenseBudgetCategories = [INVESTMENT_BUDGET_CATEGORY, RESERVE_BUDGET_CATEGORY];
+  const expensePercentSum = dash.budgets.filter(b => !nonExpenseBudgetCategories.includes(b.category)).reduce((acc, b) => acc + Number(b.percent), 0);
   const totalExpenseTarget = incomeBase > 0 ? budgetLimitInLei(expensePercentSum, incomeBase) : null;
+  const totalInvest = investActual + reserveActual;
+  const investPercentSum = dash.budgets.filter(b => nonExpenseBudgetCategories.includes(b.category)).reduce((acc, b) => acc + Number(b.percent), 0);
+  const totalInvestTarget = incomeBase > 0 ? budgetLimitInLei(investPercentSum, incomeBase) : null;
 
   el('dashMtdTable').innerHTML = `<tbody>
       <tr class="budget-table-info"><td colspan="4">Bază de calcul (venit estimat): ${incomeBase.toFixed(2)} lei</td></tr>
@@ -2852,10 +2961,11 @@ function renderMtdTable() {
       <tr class="budget-table-section"><th colspan="4">INVESTIȚII</th></tr>
       <tr class="budget-table-subhead"><th>Categorie</th><th>Total</th><th>Țintă</th><th>Vs. țintă</th></tr>
       ${investRowHtml}
+      ${reserveRowHtml}
 
       ${incomeSubtotalRow('Total Venituri', totalIncome)}
       ${subtotalRow('Total Cheltuieli', totalExpense, totalExpenseTarget, false)}
-      ${subtotalRow('Total Investiții', investActual, investTarget, true)}
+      ${subtotalRow('Total Investiții', totalInvest, totalInvestTarget, true)}
     </tbody>`;
 }
 
@@ -2872,6 +2982,7 @@ function renderYtdTable() {
   const incomeMatrix = buildCategoryMonthMatrix('Income');
   const expenseMatrix = buildCategoryMonthMatrix('Expense');
   const investMonthMap = buildInvestmentMonthMap();
+  const reserveMonthMap = buildReserveMonthMap();
 
   const rowValues = (matrix, cat) => months.map(mk => (matrix.get(cat) && matrix.get(cat).get(mk)) || 0);
   const sumByMonth = (matrix, cats) => months.map(mk => cats.reduce((acc, cat) => acc + ((matrix.get(cat) && matrix.get(cat).get(mk)) || 0), 0));
@@ -2892,6 +3003,8 @@ function renderYtdTable() {
   };
 
   const investValues = months.map(mk => investMonthMap.get(mk) || 0);
+  const reserveValues = months.map(mk => reserveMonthMap.get(mk) || 0);
+  const totalInvestValues = investValues.map((v, i) => v + reserveValues[i]);
   const totalIncomeByMonth = sumByMonth(incomeMatrix, incomeCats);
   const totalExpenseByMonth = sumByMonth(expenseMatrix, expenseCats);
 
@@ -2907,10 +3020,11 @@ function renderYtdTable() {
 
     <tr class="budget-table-section"><th colspan="${colCount}">INVESTIȚII</th></tr>
     ${dataRow(INVESTMENT_BUDGET_CATEGORY, investValues)}
+    ${dataRow(RESERVE_BUDGET_CATEGORY, reserveValues)}
 
     ${subtotalRow('Total Venituri', totalIncomeByMonth)}
     ${subtotalRow('Total Cheltuieli', totalExpenseByMonth)}
-    ${subtotalRow('Total Investiții', investValues)}
+    ${subtotalRow('Total Investiții', totalInvestValues)}
   </tbody>`;
 
   el('dashYtdTable').innerHTML = headerHtml + bodyHtml;
@@ -3021,18 +3135,19 @@ function renderTrajectorySection() {
     </div>`).join('');
 
   const investEl = el('dashTrajectoryInvestments');
-  if (trajectory.investmentTarget === null) {
-    investEl.innerHTML = '';
-  } else {
-    const recent = trajectory.investmentRecentAvg;
-    const recentText = recent !== null ? recent.toFixed(2) : 'date insuficiente';
-    const met = recent !== null && recent >= trajectory.investmentTarget;
-    investEl.innerHTML = `<div class="section-title" style="font-size:0.9rem; margin-top:14px;">Investiții</div>
-      <div class="predict-row">
-        <span class="predict-cat">Medie recentă vs. țintă lunară</span>
-        <span class="predict-values"><span class="${met ? '' : 'predict-over'}">${recentText} / ${trajectory.investmentTarget.toFixed(2)} lei</span></span>
-      </div>`;
-  }
+  const investRow = (label, target, recentAvg) => {
+    if (target === null) return '';
+    const recentText = recentAvg !== null ? recentAvg.toFixed(2) : 'date insuficiente';
+    const met = recentAvg !== null && recentAvg >= target;
+    return `<div class="predict-row">
+      <span class="predict-cat">${escapeHtml(label)} — medie recentă vs. țintă lunară</span>
+      <span class="predict-values"><span class="${met ? '' : 'predict-over'}">${recentText} / ${target.toFixed(2)} lei</span></span>
+    </div>`;
+  };
+  const investRowsHtml = investRow('Investiții', trajectory.investmentTarget, trajectory.investmentRecentAvg)
+    + investRow('Fond de rezervă', trajectory.reserveTarget, trajectory.reserveRecentAvg);
+  investEl.innerHTML = investRowsHtml === '' ? '' :
+    '<div class="section-title" style="font-size:0.9rem; margin-top:14px;">Investiții</div>' + investRowsHtml;
 }
 
 function renderPendingConfirmations() {
@@ -3674,7 +3789,7 @@ function renderBudgetRow(name, extraLabel) {
   const existing = budgetItems.find(b => b.category === name);
   const value = existing ? existing.percent : '';
   const label = extraLabel ? `${escapeHtml(name)} <span class="subtle">${escapeHtml(extraLabel)}</span>` : escapeHtml(name);
-  const placeholder = name === INVESTMENT_BUDGET_CATEGORY ? 'fără țintă' : 'fără limită maximă';
+  const placeholder = (name === INVESTMENT_BUDGET_CATEGORY || name === RESERVE_BUDGET_CATEGORY) ? 'fără țintă' : 'fără limită maximă';
   return `<div class="budget-row" data-category="${escapeHtml(name)}">
     <span class="budget-name">${label}</span>
     <input type="number" min="0" max="100" step="1" class="budget-input" placeholder="${placeholder}" value="${value}">
@@ -3687,7 +3802,8 @@ function renderBudgetList() {
   const expenseCategories = categories.filter(c => c.type === 'Expense' && !BUDGET_EXCLUDED_CATEGORIES.includes(c.name));
   const container = el('budgetList');
   const investmentRow = renderBudgetRow(INVESTMENT_BUDGET_CATEGORY, '(din transferuri)');
-  container.innerHTML = investmentRow + expenseCategories.map(c => renderBudgetRow(c.name)).join('');
+  const reserveRow = renderBudgetRow(RESERVE_BUDGET_CATEGORY, '(din transferuri)');
+  container.innerHTML = investmentRow + reserveRow + expenseCategories.map(c => renderBudgetRow(c.name)).join('');
 }
 
 el('budgetList').addEventListener('click', async (e) => {
