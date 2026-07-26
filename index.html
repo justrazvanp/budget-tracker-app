@@ -579,6 +579,114 @@
   .budget-row:last-child { border-bottom: none; }
   .budget-row .budget-name { flex: 1; font-weight: 600; font-size: 0.92rem; }
   .budget-row input { width: 110px; }
+
+  /* ===== Desktop layout (>=768px) ===== */
+  /* Wrapper wraps existing label+field so the label:first-of-type cascade doesn't strip
+     its top margin at any width — restores the exact spacing the unwrapped mobile markup had. */
+  .hist-filter-field label:first-of-type { margin-top: 14px; }
+
+  .hist-table-wrap { display: none; }
+
+  .sim-sidebyside-view { display: none; }
+
+  .dash-desktop-only { display: none; }
+
+  @media (min-width: 768px) {
+    body { padding: 0; }
+
+    .app {
+      max-width: 2200px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 32px 24px 264px;
+    }
+
+    .app-nav#appNav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 220px;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-start;
+      padding: 24px 12px;
+      gap: 6px;
+      margin-bottom: 0;
+      border: none;
+      border-right: 1px solid var(--border);
+      border-radius: 0;
+      background: var(--card);
+      overflow-y: auto;
+    }
+
+    .app-nav#appNav button {
+      flex: none;
+      text-align: left;
+      padding: 12px 14px;
+      font-size: 0.92rem;
+    }
+
+    #tab-add #content { max-width: 480px; margin: 0 auto; }
+
+    .chart-wrap { height: 320px; }
+
+    #dashContent {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      grid-template-areas:
+        "period totalcompare"
+        "mtd ytd"
+        "catchart trendext"
+        "predictions trajectory"
+        "pending balances";
+    }
+
+    /* When there's nothing to confirm, dashPendingCard is display:none — let balances take
+       the full row instead of sitting alone in the right half next to empty space. */
+    #dashContent:has(#dashPendingCard.hidden) #dashBalancesCard { grid-column: 1 / -1; }
+
+    #dashContent > .card { margin-bottom: 0; }
+
+    #dashPendingCard { grid-area: pending; }
+    #dashPeriodCard { grid-area: period; }
+    #dashTotalCompare { grid-area: totalcompare; }
+    #dashMtdTableCard { grid-area: mtd; }
+    #dashYtdTableCard { grid-area: ytd; }
+    #dashCategoryChartCard { grid-area: catchart; }
+    #dashTrendChartExtCard { grid-area: trendext; }
+    #dashPredictionsCard { grid-area: predictions; }
+    #dashTrajectoryCard { grid-area: trajectory; }
+    #dashBalancesCard { grid-area: balances; }
+
+    .dash-desktop-only { display: block; }
+    .dash-mobile-only { display: none; }
+
+    #histFiltersRow { display: flex; flex-wrap: wrap; gap: 0 16px; }
+    #histFiltersRow .hist-filter-field { flex: 1 1 200px; }
+
+    .hist-table-wrap { display: block; }
+    #histTxList, #histTrList { display: none; }
+
+    .sim-sidebyside-view { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .sim-combo-view { display: none; }
+  }
+
+  .hist-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .hist-table th, .hist-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  .hist-table th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; }
+  .hist-table td.hist-table-amount { text-align: right; white-space: nowrap; }
+  .hist-table td.hist-table-actions { text-align: right; white-space: nowrap; }
+  .hist-table td.hist-table-actions button { margin-left: 6px; }
+
+  .budget-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; white-space: nowrap; }
+  .budget-table th, .budget-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  .budget-table th:first-child, .budget-table td:first-child { text-align: left; white-space: normal; }
+  .budget-table th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
+  .budget-table td.budget-table-empty { color: var(--muted); }
+  .budget-table tr.budget-table-subtotal td { font-weight: 700; border-top: 2px solid var(--border); }
+  .budget-table-vs-track { display: inline-block; width: 56px; height: 8px; }
 </style>
 </head>
 <body>
@@ -702,7 +810,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dashPeriodCard">
         <div class="section-title">Perioadă</div>
         <div class="segmented" id="dashPeriodQuick">
           <button type="button" data-period="this-month" class="active">Luna aceasta</button>
@@ -728,38 +836,54 @@
 
       <div class="card total-compare" id="dashTotalCompare"></div>
 
-      <div class="card">
+      <div class="card" id="dashBalancesCard">
         <div class="section-title">Solduri curente</div>
         <div id="dashBalances"></div>
       </div>
 
-      <div class="card">
+      <!-- Desktop-only: classic tabular budget view (Month-to-date / Year-to-date) -->
+      <div class="card dash-desktop-only" id="dashMtdTableCard">
+        <div class="section-title">Luna curentă</div>
+        <div class="table-scroll"><table class="budget-table" id="dashMtdTable"></table></div>
+      </div>
+
+      <div class="card dash-desktop-only" id="dashYtdTableCard">
+        <div class="section-title">Anul curent</div>
+        <div class="table-scroll"><table class="budget-table" id="dashYtdTable"></table></div>
+      </div>
+
+      <div class="card" id="dashCategoryChartCard">
         <div class="section-title">Cheltuieli pe categorii</div>
         <div id="dashCategoryChartEmpty" class="empty-state hidden">Nu există cheltuieli în perioada selectată.</div>
         <div class="chart-wrap"><canvas id="dashCategoryChart"></canvas></div>
       </div>
 
-      <div class="card">
+      <div class="card dash-desktop-only" id="dashTrendChartExtCard">
+        <div class="section-title">Evoluție pe categorii — ultimele 12 luni</div>
+        <div class="chart-wrap"><canvas id="dashTrendChartExt"></canvas></div>
+      </div>
+
+      <div class="card dash-mobile-only" id="dashCategorySpendCard">
         <div class="section-title">Cheltuieli pe categorie</div>
         <div id="dashCategorySpend"></div>
       </div>
 
-      <div class="card">
+      <div class="card dash-mobile-only" id="dashInvestmentsCard">
         <div class="section-title">Investiții</div>
         <div id="dashInvestments"></div>
       </div>
 
-      <div class="card">
+      <div class="card dash-mobile-only" id="dashTrendChartCard">
         <div class="section-title">Evoluție lunară (venituri vs. cheltuieli)</div>
         <div class="chart-wrap"><canvas id="dashTrendChart"></canvas></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dashPredictionsCard">
         <div class="section-title">Predicție pe categorie<span class="period-lock-badge">mereu luna curentă</span></div>
         <div id="dashPredictions"></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dashTrajectoryCard">
         <div class="section-title">Traiectorie estimată — următoarele 6 luni</div>
         <div class="table-scroll"><table class="sim-table" id="dashTrajectoryTable"></table></div>
         <div id="dashTrajectoryOverBudget"></div>
@@ -790,21 +914,31 @@
         </div>
       </div>
 
-      <label for="histAccount">Cont</label>
-      <select id="histAccount"><option value="">Toate conturile</option></select>
+      <div id="histFiltersRow">
+        <div class="hist-filter-field">
+          <label for="histAccount">Cont</label>
+          <select id="histAccount"><option value="">Toate conturile</option></select>
+        </div>
 
-      <label for="histType">Tip</label>
-      <select id="histType">
-        <option value="">Toate</option>
-        <option value="Expense">Cheltuială</option>
-        <option value="Income">Venit</option>
-      </select>
+        <div class="hist-filter-field">
+          <label for="histType">Tip</label>
+          <select id="histType">
+            <option value="">Toate</option>
+            <option value="Expense">Cheltuială</option>
+            <option value="Income">Venit</option>
+          </select>
+        </div>
 
-      <label for="histCategory">Categorie</label>
-      <select id="histCategory"><option value="">Toate categoriile</option></select>
+        <div class="hist-filter-field">
+          <label for="histCategory">Categorie</label>
+          <select id="histCategory"><option value="">Toate categoriile</option></select>
+        </div>
 
-      <label for="histSearch">Caută în descriere</label>
-      <input type="text" id="histSearch" placeholder="ex: cumpărături">
+        <div class="hist-filter-field">
+          <label for="histSearch">Caută în descriere</label>
+          <input type="text" id="histSearch" placeholder="ex: cumpărături">
+        </div>
+      </div>
     </div>
 
     <div class="segmented" id="histSectionToggle">
@@ -847,6 +981,14 @@
 
       <div class="card">
         <div id="histTxList"></div>
+        <div class="table-scroll hist-table-wrap">
+          <table class="hist-table">
+            <thead>
+              <tr><th>Dată</th><th>Cont</th><th>Tip</th><th>Categorie</th><th>Descriere</th><th>Sumă</th><th>Acțiuni</th></tr>
+            </thead>
+            <tbody id="histTxTableBody"></tbody>
+          </table>
+        </div>
         <div class="hist-total" id="histTxTotal"></div>
       </div>
     </div>
@@ -882,6 +1024,14 @@
 
       <div class="card">
         <div id="histTrList"></div>
+        <div class="table-scroll hist-table-wrap">
+          <table class="hist-table">
+            <thead>
+              <tr><th>Dată</th><th>Cont sursă</th><th>Cont destinație</th><th>Descriere</th><th>Sumă</th><th>Acțiuni</th></tr>
+            </thead>
+            <tbody id="histTrTableBody"></tbody>
+          </table>
+        </div>
         <div class="hist-total" id="histTrTotal"></div>
       </div>
     </div>
@@ -2008,6 +2158,8 @@ function renderDashboardPeriodSections() {
   renderCategorySpend();
   renderInvestmentSection();
   renderTrendChart();
+  renderYtdTable();
+  renderTrendChartExt();
 }
 
 el('dashPeriodQuick').addEventListener('click', (e) => {
@@ -2590,6 +2742,191 @@ function renderTrendChart() {
   });
 }
 
+// ===== Desktop-only tabular budget view (Luna curentă / Anul curent) =====
+
+function roMonthShort(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('ro-RO', { month: 'short' });
+}
+
+// category -> Map(monthKey -> summed amount), built from all transactions of the given type.
+function buildCategoryMonthMatrix(type) {
+  const map = new Map();
+  dash.transactions.forEach(t => {
+    if (t.type !== type) return;
+    const mk = monthKey(t.date);
+    if (!map.has(t.category)) map.set(t.category, new Map());
+    const catMap = map.get(t.category);
+    catMap.set(mk, (catMap.get(mk) || 0) + Number(t.amount));
+  });
+  return map;
+}
+
+// monthKey -> summed amount transferred into the investment accounts.
+function buildInvestmentMonthMap() {
+  const investmentAccountIds = getInvestmentAccountIds(dash.accounts);
+  const map = new Map();
+  dash.transfers.forEach(tr => {
+    if (!investmentAccountIds.includes(String(tr.dest_account_id))) return;
+    const mk = monthKey(tr.date);
+    map.set(mk, (map.get(mk) || 0) + Number(tr.dest_amount));
+  });
+  return map;
+}
+
+function budgetTableAmountCell(value) {
+  if (!value) return `<td class="budget-table-empty">–</td>`;
+  return `<td>${value.toFixed(2)}</td>`;
+}
+
+// Green/red mini bar: for expense-like rows staying at/under target is "good"; for the
+// Investiții row it's inverted (reaching/exceeding the target is the goal).
+function budgetTableVsTargetCell(actual, target, isInvestmentRow) {
+  if (target === null || !(target > 0)) return `<td class="budget-table-empty">–</td>`;
+  const pct = (actual / target) * 100;
+  const good = isInvestmentRow ? actual >= target : actual <= target;
+  return `<td><div class="bar-track budget-table-vs-track"><div class="bar-fill ${good ? 'ok' : 'over'}" style="width:${Math.min(Math.max(pct, 0), 100)}%"></div></div></td>`;
+}
+
+// "Luna curentă" table: always the real current calendar month (like Predicție pe categorie),
+// independent of the Dashboard period selector.
+function renderMtdTable() {
+  const cm = currentMonthKey();
+  const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
+  const incomeCats = categories.filter(c => c.type === 'Income').map(c => c.name);
+  const expenseCats = categories.filter(c => c.type === 'Expense').map(c => c.name);
+
+  const incomeMatrix = buildCategoryMonthMatrix('Income');
+  const expenseMatrix = buildCategoryMonthMatrix('Expense');
+  const investMonthMap = buildInvestmentMonthMap();
+
+  const actualFor = (matrix, cat) => (matrix.get(cat) && matrix.get(cat).get(cm)) || 0;
+
+  const categoryRow = (cat, actual, target, isInvestmentRow) => `<tr>
+    <td>${escapeHtml(cat)}</td>
+    ${budgetTableAmountCell(actual)}
+    ${target !== null ? `<td>${target.toFixed(2)}</td>` : `<td class="budget-table-empty">–</td>`}
+    ${budgetTableVsTargetCell(actual, target, isInvestmentRow)}
+  </tr>`;
+
+  const subtotalRow = (label, actual, target, isInvestmentRow) => `<tr class="budget-table-subtotal">
+    <td>${escapeHtml(label)}</td>
+    <td>${actual.toFixed(2)}</td>
+    ${target !== null ? `<td>${target.toFixed(2)}</td>` : `<td class="budget-table-empty">–</td>`}
+    ${budgetTableVsTargetCell(actual, target, isInvestmentRow)}
+  </tr>`;
+
+  const incomeRowsHtml = incomeCats.map(cat => categoryRow(cat, actualFor(incomeMatrix, cat), getBudgetLimitLei(cat, incomeBase), false)).join('');
+  const expenseRowsHtml = expenseCats.map(cat => categoryRow(cat, actualFor(expenseMatrix, cat), getBudgetLimitLei(cat, incomeBase), false)).join('');
+  const investActual = investMonthMap.get(cm) || 0;
+  const investTarget = getBudgetLimitLei(INVESTMENT_BUDGET_CATEGORY, incomeBase);
+  const investRowHtml = categoryRow(INVESTMENT_BUDGET_CATEGORY, investActual, investTarget, true);
+
+  const totalIncome = incomeCats.reduce((acc, cat) => acc + actualFor(incomeMatrix, cat), 0);
+  const totalExpense = expenseCats.reduce((acc, cat) => acc + actualFor(expenseMatrix, cat), 0);
+  const expensePercentSum = dash.budgets.filter(b => b.category !== INVESTMENT_BUDGET_CATEGORY).reduce((acc, b) => acc + Number(b.percent), 0);
+  const totalExpenseTarget = incomeBase > 0 ? budgetLimitInLei(expensePercentSum, incomeBase) : null;
+
+  el('dashMtdTable').innerHTML = `<thead><tr><th>Categorie</th><th>Total</th><th>Țintă</th><th>Vs. țintă</th></tr></thead>
+    <tbody>
+      ${incomeRowsHtml}
+      ${expenseRowsHtml}
+      ${investRowHtml}
+      ${subtotalRow('Total Venituri', totalIncome, null, false)}
+      ${subtotalRow('Total Cheltuieli', totalExpense, totalExpenseTarget, false)}
+      ${subtotalRow('Total Investiții', investActual, investTarget, true)}
+    </tbody>`;
+}
+
+// "Anul curent" table: a category × calendar-month matrix for the year of the active Dashboard
+// period (dashPeriod.from's year — so navigating the period into a different year follows it).
+function renderYtdTable() {
+  const year = Number(dashPeriod.from.slice(0, 4));
+  const months = Array.from({ length: 12 }, (_, i) => `${year}-${pad2(i + 1)}`);
+  const incomeCats = categories.filter(c => c.type === 'Income').map(c => c.name);
+  const expenseCats = categories.filter(c => c.type === 'Expense').map(c => c.name);
+
+  const incomeMatrix = buildCategoryMonthMatrix('Income');
+  const expenseMatrix = buildCategoryMonthMatrix('Expense');
+  const investMonthMap = buildInvestmentMonthMap();
+
+  const rowValues = (matrix, cat) => months.map(mk => (matrix.get(cat) && matrix.get(cat).get(mk)) || 0);
+  const sumByMonth = (matrix, cats) => months.map(mk => cats.reduce((acc, cat) => acc + ((matrix.get(cat) && matrix.get(cat).get(mk)) || 0), 0));
+
+  const dataRow = (label, values) => `<tr>
+    <td>${escapeHtml(label)}</td>
+    ${values.map(budgetTableAmountCell).join('')}
+    ${budgetTableAmountCell(values.reduce((acc, v) => acc + v, 0))}
+  </tr>`;
+
+  const subtotalRow = (label, values) => {
+    const total = values.reduce((acc, v) => acc + v, 0);
+    return `<tr class="budget-table-subtotal">
+      <td>${escapeHtml(label)}</td>
+      ${values.map(v => `<td>${v.toFixed(2)}</td>`).join('')}
+      <td>${total.toFixed(2)}</td>
+    </tr>`;
+  };
+
+  const investValues = months.map(mk => investMonthMap.get(mk) || 0);
+  const totalIncomeByMonth = sumByMonth(incomeMatrix, incomeCats);
+  const totalExpenseByMonth = sumByMonth(expenseMatrix, expenseCats);
+
+  const headerHtml = `<thead><tr><th>Categorie</th>${months.map(mk => `<th>${roMonthShort(mk)}</th>`).join('')}<th>Total</th></tr></thead>`;
+  const bodyHtml = `<tbody>
+    ${incomeCats.map(cat => dataRow(cat, rowValues(incomeMatrix, cat))).join('')}
+    ${expenseCats.map(cat => dataRow(cat, rowValues(expenseMatrix, cat))).join('')}
+    ${dataRow(INVESTMENT_BUDGET_CATEGORY, investValues)}
+    ${subtotalRow('Total Venituri', totalIncomeByMonth)}
+    ${subtotalRow('Total Cheltuieli', totalExpenseByMonth)}
+    ${subtotalRow('Total Investiții', investValues)}
+  </tbody>`;
+
+  el('dashYtdTable').innerHTML = headerHtml + bodyHtml;
+}
+
+// Extended trend chart: one line per Expense category (instead of the aggregate Venituri vs.
+// Cheltuieli bars), over the trailing 12 months ending at the active period — same end-month
+// convention as renderTrendChart above, just a longer window and per-category granularity.
+let dashTrendChartExtInstance = null;
+function renderTrendChartExt() {
+  if (typeof Chart === 'undefined') return;
+  const months = [];
+  let probe = monthKey(dashPeriod.to);
+  for (let i = 0; i < 12; i++) { months.unshift(probe); probe = addMonths(probe, -1); }
+
+  const expenseCats = categories.filter(c => c.type === 'Expense').map(c => c.name);
+  const expenseMatrix = buildCategoryMonthMatrix('Expense');
+
+  const labels = months.map(formatMonthLabel);
+  const datasets = expenseCats.map((cat, i) => ({
+    label: cat,
+    data: months.map(mk => (expenseMatrix.get(cat) && expenseMatrix.get(cat).get(mk)) || 0),
+    borderColor: CHART_COLORS[i % CHART_COLORS.length],
+    backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+    fill: false,
+    tension: 0.25
+  }));
+
+  if (dashTrendChartExtInstance) {
+    dashTrendChartExtInstance.data.labels = labels;
+    dashTrendChartExtInstance.data.datasets = datasets;
+    dashTrendChartExtInstance.update();
+    return;
+  }
+
+  dashTrendChartExtInstance = new Chart(el('dashTrendChartExt').getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } }
+    }
+  });
+}
+
 function renderPredictions() {
   const incomeBase = computeIncomeBase(dash.transactions, dash.recurring);
   const predictions = computePredictions();
@@ -2758,6 +3095,8 @@ el('dashPendingList').addEventListener('click', async (e) => {
     renderBalances();
     renderCategorySpend();
     renderPredictions();
+    renderMtdTable();
+    renderYtdTable();
     updateDashboardBadge(dash.pending.length + dash.pendingTransfers.length);
 
     const account = dash.accounts.find(a => String(a.id) === String(data.account_id));
@@ -2798,6 +3137,7 @@ el('dashPendingTransferList').addEventListener('click', async (e) => {
     renderPendingConfirmations();
     renderTotalCompare();
     renderBalances();
+    renderMtdTable();
     renderDashboardPeriodSections();
     renderPredictions();
     renderTrajectorySection();
@@ -2849,6 +3189,7 @@ function renderDashboard() {
   renderPendingConfirmations();
   renderTotalCompare();
   renderBalances();
+  renderMtdTable();
   renderDashboardPeriodSections();
   renderPredictions();
   renderTrajectorySection();
@@ -3500,9 +3841,11 @@ function renderHistLists() {
 function renderHistTransactions() {
   const rows = getFilteredHistTransactions();
   const container = el('histTxList');
+  const tableBody = el('histTxTableBody');
   const totalEl = el('histTxTotal');
   if (rows.length === 0) {
     container.innerHTML = '<div class="empty-state">Nicio tranzacție găsită.</div>';
+    tableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Nicio tranzacție găsită.</td></tr>';
     totalEl.textContent = '';
     return;
   }
@@ -3523,6 +3866,23 @@ function renderHistTransactions() {
     </div>`;
   }).join('');
 
+  tableBody.innerHTML = rows.map(t => {
+    const sign = t.type === 'Income' ? '+' : '−';
+    const colorClass = t.type === 'Income' ? 'hist-amount-income' : 'hist-amount-expense';
+    return `<tr data-id="${t.id}">
+      <td>${t.date}</td>
+      <td>${escapeHtml(accountNameFor(t.account_id))}</td>
+      <td>${t.type === 'Income' ? 'Venit' : 'Cheltuială'}</td>
+      <td>${escapeHtml(t.category)}</td>
+      <td>${t.description ? escapeHtml(t.description) : ''}</td>
+      <td class="hist-table-amount ${colorClass}">${sign}${Number(t.amount).toFixed(2)} ${escapeHtml(currencyFor(t.account_id))}</td>
+      <td class="hist-table-actions">
+        <button type="button" class="icon-btn" data-edit="${t.id}">Editează</button>
+        <button type="button" class="icon-btn" data-delete="${t.id}">Șterge</button>
+      </td>
+    </tr>`;
+  }).join('');
+
   const sums = sumByCurrency(rows, t => t.type === 'Income' ? Number(t.amount) : -Number(t.amount), t => currencyFor(t.account_id));
   totalEl.textContent = 'Total (net): ' + formatCurrencySums(sums);
 }
@@ -3530,9 +3890,11 @@ function renderHistTransactions() {
 function renderHistTransfers() {
   const rows = getFilteredHistTransfers();
   const container = el('histTrList');
+  const tableBody = el('histTrTableBody');
   const totalEl = el('histTrTotal');
   if (rows.length === 0) {
     container.innerHTML = '<div class="empty-state">Niciun transfer găsit.</div>';
+    tableBody.innerHTML = '<tr><td colspan="6" class="empty-state">Niciun transfer găsit.</td></tr>';
     totalEl.textContent = '';
     return;
   }
@@ -3551,17 +3913,33 @@ function renderHistTransfers() {
     </div>`;
   }).join('');
 
+  tableBody.innerHTML = rows.map(tr => {
+    return `<tr data-id="${tr.id}">
+      <td>${tr.date}</td>
+      <td>${escapeHtml(accountNameFor(tr.source_account_id))}</td>
+      <td>${escapeHtml(accountNameFor(tr.dest_account_id))}</td>
+      <td>${tr.description ? escapeHtml(tr.description) : ''}</td>
+      <td class="hist-table-amount">${Number(tr.source_amount).toFixed(2)} ${escapeHtml(currencyFor(tr.source_account_id))} → ${Number(tr.dest_amount).toFixed(2)} ${escapeHtml(currencyFor(tr.dest_account_id))}</td>
+      <td class="hist-table-actions">
+        <button type="button" class="icon-btn" data-edit="${tr.id}">Editează</button>
+        <button type="button" class="icon-btn" data-delete="${tr.id}">Șterge</button>
+      </td>
+    </tr>`;
+  }).join('');
+
   const sums = sumByCurrency(rows, tr => Number(tr.source_amount), tr => currencyFor(tr.source_account_id));
   totalEl.textContent = 'Total (sumă sursă): ' + formatCurrencySums(sums);
 }
 
 // ---------- Istoric: edit/delete tranzacții ----------
-el('histTxList').addEventListener('click', (e) => {
+function handleHistTxListClick(e) {
   const editBtn = e.target.closest('button[data-edit]');
   const delBtn = e.target.closest('button[data-delete]');
   if (editBtn) startEditHistTx(editBtn.dataset.edit);
   if (delBtn) deleteHistTx(delBtn.dataset.delete);
-});
+}
+el('histTxList').addEventListener('click', handleHistTxListClick);
+el('histTxTableBody').addEventListener('click', handleHistTxListClick);
 
 el('histTxTypeToggle').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-type]');
@@ -3635,12 +4013,14 @@ async function deleteHistTx(id) {
 }
 
 // ---------- Istoric: edit/delete transferuri ----------
-el('histTrList').addEventListener('click', (e) => {
+function handleHistTrListClick(e) {
   const editBtn = e.target.closest('button[data-edit]');
   const delBtn = e.target.closest('button[data-delete]');
   if (editBtn) startEditHistTr(editBtn.dataset.edit);
   if (delBtn) deleteHistTr(delBtn.dataset.delete);
-});
+}
+el('histTrList').addEventListener('click', handleHistTrListClick);
+el('histTrTableBody').addEventListener('click', handleHistTrListClick);
 
 function startEditHistTr(id) {
   const tr = histTransfers.find(t => String(t.id) === String(id));
@@ -3839,12 +4219,30 @@ function renderSimulatorRecurringResult(account, category, amount, startMonth) {
 
   const anyNegative = withExtra.months.some(m => m.negative);
 
+  const plainRows = plain.months.map(p => `<tr><td>${formatMonthLabel(p.month)}</td><td>${p.balance.toFixed(2)}</td></tr>`).join('');
+  const extraRows = withExtra.months.map(m => `<tr><td>${formatMonthLabel(m.month)}</td><td class="${m.negative ? 'sim-negative' : ''}">${m.balance.toFixed(2)}</td></tr>`).join('');
+
   el('simResults').innerHTML = `<div class="card">
     <div class="section-title">Traiectorie comparativă — ${escapeHtml(account.name)}</div>
-    <div class="table-scroll"><table class="sim-table">
-      <tr><th>Lună</th><th>Fără cheltuiala nouă</th><th>Cu cheltuiala nouă</th></tr>
-      ${rows}
-    </table></div>
+
+    <div class="sim-combo-view">
+      <div class="table-scroll"><table class="sim-table">
+        <tr><th>Lună</th><th>Fără cheltuiala nouă</th><th>Cu cheltuiala nouă</th></tr>
+        ${rows}
+      </table></div>
+    </div>
+
+    <div class="sim-sidebyside-view">
+      <div>
+        <div class="section-title" style="font-size:0.9rem;">Fără cheltuiala nouă</div>
+        <div class="table-scroll"><table class="sim-table"><tr><th>Lună</th><th>Sold</th></tr>${plainRows}</table></div>
+      </div>
+      <div>
+        <div class="section-title" style="font-size:0.9rem;">Cu cheltuiala nouă</div>
+        <div class="table-scroll"><table class="sim-table"><tr><th>Lună</th><th>Sold</th></tr>${extraRows}</table></div>
+      </div>
+    </div>
+
     ${anyNegative ? '<div class="banner warning show" style="margin-top:12px;">Soldul ar deveni negativ în cel puțin o lună (marcat cu roșu în tabel).</div>' : ''}
     ${impactHtml}
   </div>`;
@@ -3880,7 +4278,7 @@ init();
 loadTransactionHistory();
 loadAddTabBudgets();
 checkPendingBadge();
-switchTab('dashboard');
+switchTab(window.innerWidth >= 768 ? 'dashboard' : 'add');
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
