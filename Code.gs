@@ -634,6 +634,7 @@ function addRecurring(p) {
       id, Number(p.account_id), p.type, p.category, p.description || '', amount, true, dayOfMonth,
       '', frequency, monthOfYear
     ]);
+    sheet.getRange(sheet.getLastRow(), 9).setNumberFormat('@'); // last_generated_period stays plain text
   } finally {
     lock.releaseLock();
   }
@@ -716,6 +717,7 @@ function addRecurringTransfer(p) {
       id, Number(p.source_account_id), Number(p.dest_account_id), fixedSide, fixedAmount,
       frequency, dayOfMonth, monthOfYear, true, ''
     ]);
+    sheet.getRange(sheet.getLastRow(), 10).setNumberFormat('@'); // last_generated_period stays plain text
   } finally {
     lock.releaseLock();
   }
@@ -988,6 +990,22 @@ function deleteTransfer(p) {
   };
 }
 
+// last_generated_period is meant to hold a plain "YYYY-MM" (or "YYYY" for Anual) string, but
+// without an explicit text number format on the column, Google Sheets can silently reinterpret
+// a value that looks like a date and store it as an actual Date instead. A strict === against
+// currentMonthKey/currentYearKey (always a string) then never matches, so the "already
+// generated" check silently never fires and the item regenerates every day instead of once a
+// month. Normalize whatever getValues() handed back to the same "YYYY-MM"/"YYYY" string shape
+// before comparing, regardless of which type the cell actually holds.
+function normalizePeriodValue_(value, isAnnual) {
+  if (value instanceof Date) {
+    return isAnnual
+      ? Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy')
+      : Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM');
+  }
+  return String(value || '').trim();
+}
+
 // Meant to run on a daily time-driven trigger (Apps Script editor > Triggers), not via the
 // web app — it is intentionally not registered in ACTIONS_. For each active Recurring row
 // whose day_of_month has been reached and hasn't already been generated this month, appends
@@ -1017,12 +1035,13 @@ function generateRecurringTransactions() {
       if (!active) continue;
 
       var dayOfMonth = Number(row[7]);
-      var lastGeneratedPeriod = row[8];
       var frequency = row[9] || 'Lunar';
       var monthOfYear = row[10];
+      var isAnnual = frequency === 'Anual';
+      var lastGeneratedPeriod = normalizePeriodValue_(row[8], isAnnual);
 
       var periodKey;
-      if (frequency === 'Anual') {
+      if (isAnnual) {
         if (currentMonthNum !== Number(monthOfYear)) continue;
         if (currentDay < dayOfMonth) continue;
         if (lastGeneratedPeriod === currentYearKey) continue;
@@ -1040,7 +1059,9 @@ function generateRecurringTransactions() {
         newId, Number(accountId), today, type, category, description || '', Number(amount),
         Number(recurringId), false
       ]);
-      recurringSheet.getRange(2 + i, 9).setValue(periodKey);
+      var periodCell = recurringSheet.getRange(2 + i, 9);
+      periodCell.setNumberFormat('@');
+      periodCell.setValue(periodKey);
       generated++;
     }
   } finally {
@@ -1084,12 +1105,13 @@ function generateRecurringTransfers() {
       if (!active) continue;
 
       var dayOfMonth = Number(row[6]);
-      var lastGeneratedPeriod = row[9];
       var frequency = row[5] || 'Lunar';
       var monthOfYear = row[7];
+      var isAnnual = frequency === 'Anual';
+      var lastGeneratedPeriod = normalizePeriodValue_(row[9], isAnnual);
 
       var periodKey;
-      if (frequency === 'Anual') {
+      if (isAnnual) {
         if (currentMonthNum !== Number(monthOfYear)) continue;
         if (currentDay < dayOfMonth) continue;
         if (lastGeneratedPeriod === currentYearKey) continue;
@@ -1136,7 +1158,9 @@ function generateRecurringTransfers() {
         newId, today, Number(sourceAccountId), Number(destAccountId), sourceAmount,
         destAmount, fxRate, '', Number(recurringTransferId), false
       ]);
-      recurringSheet.getRange(2 + i, 10).setValue(periodKey);
+      var periodCell = recurringSheet.getRange(2 + i, 10);
+      periodCell.setNumberFormat('@');
+      periodCell.setValue(periodKey);
       generated++;
     }
   } finally {
@@ -1144,6 +1168,56 @@ function generateRecurringTransfers() {
   }
 
   return { generated: generated };
+}
+
+// One-off repair for existing Recurring/RecurringTransfers rows whose last_generated_period
+// cell was already silently reinterpreted as a Date by Sheets before the generate functions
+// above started forcing the column to plain text — those rows would otherwise keep failing
+// the "already generated" check forever, even after today's fix. Run once, manually, from the
+// editor. Safe to re-run: rows that are already a plain-text "YYYY-MM"/"YYYY" string just get
+// rewritten with the same value.
+function repairRecurringPeriods() {
+  var fixed = [];
+
+  var recSheet = getSheet_(SHEETS.RECURRING);
+  var recLastRow = recSheet.getLastRow();
+  if (recLastRow > 1) {
+    var recRows = recSheet.getRange(2, 1, recLastRow - 1, 11).getValues();
+    for (var i = 0; i < recRows.length; i++) {
+      var row = recRows[i];
+      var raw = row[8];
+      var isAnnual = (row[9] || 'Lunar') === 'Anual';
+      var normalized = normalizePeriodValue_(raw, isAnnual);
+      var cell = recSheet.getRange(2 + i, 9);
+      cell.setNumberFormat('@');
+      cell.setValue(normalized);
+      if (raw instanceof Date) {
+        fixed.push('Recurring id ' + row[0] + ' (' + row[3] + '): Date(' + raw + ') -> "' + normalized + '"');
+      }
+    }
+  }
+
+  var recTrSheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+  var recTrLastRow = recTrSheet.getLastRow();
+  if (recTrLastRow > 1) {
+    var recTrRows = recTrSheet.getRange(2, 1, recTrLastRow - 1, 10).getValues();
+    for (var j = 0; j < recTrRows.length; j++) {
+      var trRow = recTrRows[j];
+      var trRaw = trRow[9];
+      var trIsAnnual = (trRow[5] || 'Lunar') === 'Anual';
+      var trNormalized = normalizePeriodValue_(trRaw, trIsAnnual);
+      var trCell = recTrSheet.getRange(2 + j, 10);
+      trCell.setNumberFormat('@');
+      trCell.setValue(trNormalized);
+      if (trRaw instanceof Date) {
+        fixed.push('RecurringTransfers id ' + trRow[0] + ': Date(' + trRaw + ') -> "' + trNormalized + '"');
+      }
+    }
+  }
+
+  Logger.log('Repair finished. %s row(s) actually held a Date and were converted back to text:', fixed.length);
+  fixed.forEach(function (line) { Logger.log(line); });
+  return fixed;
 }
 
 function formatDate_(value) {
