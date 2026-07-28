@@ -1674,10 +1674,50 @@ function recordLocalTransaction(payload, serverId) {
   renderQuickCategories();
 }
 
+// Central loader for the 9 read-only datasets every screen needs at least some of.
+// init(), loadTransactionHistory(), loadAddTabBudgets(), checkPendingBadge() and
+// loadDashboard() all race to load at page start — without this, each of them fired its own
+// apiGet for data the others were requesting at the same moment, up to 16 concurrent calls for
+// what's really only 9 distinct datasets. Concurrent callers now share this ONE in-flight
+// request instead. `force` (the Dashboard's "Reîmprospătează" button) always starts a fresh
+// fetch. fxRates only actually depends on accounts + recurringTransfers, so it starts as soon
+// as those two resolve instead of waiting on the other 7 unrelated datasets too.
+let appDataPromise_ = null;
+function loadAllAppData(force) {
+  if (!force && appDataPromise_) return appDataPromise_;
+
+  const accountsP = apiGet('getAccounts');
+  const categoriesP = apiGet('getCategories');
+  const transactionsP = apiGet('getTransactions');
+  const transfersP = apiGet('getTransfers');
+  const recurringP = apiGet('getRecurring');
+  const recurringTransfersP = apiGet('getRecurringTransfers');
+  const budgetsP = apiGet('getBudgets');
+  const pendingP = apiGet('getPendingConfirmations');
+  const pendingTransfersP = apiGet('getPendingTransferConfirmations');
+  const fxRatesP = Promise.all([accountsP, recurringTransfersP])
+    .then(([accountsData, recurringTransfersData]) => fetchFxRatesForRecurringTransfers(accountsData, recurringTransfersData));
+
+  appDataPromise_ = Promise.all([
+    accountsP, categoriesP, transactionsP, transfersP, recurringP, recurringTransfersP,
+    budgetsP, pendingP, pendingTransfersP, fxRatesP
+  ]).then(([accountsData, categoriesData, transactionsData, transfersData, recurringData,
+    recurringTransfersData, budgetsData, pendingData, pendingTransfersData, fxRates]) => ({
+    accounts: accountsData, categories: categoriesData, transactions: transactionsData,
+    transfers: transfersData, recurring: recurringData, recurringTransfers: recurringTransfersData,
+    budgets: budgetsData, pending: pendingData, pendingTransfers: pendingTransfersData, fxRates
+  })).catch(err => {
+    appDataPromise_ = null; // let a later call (even without force) retry instead of staying stuck rejected
+    throw err;
+  });
+
+  return appDataPromise_;
+}
+
 async function loadTransactionHistory() {
   try {
-    const data = await apiGet('getTransactions');
-    transactions = trimTransactionHistory(data);
+    const data = await loadAllAppData();
+    transactions = trimTransactionHistory(data.transactions);
     localStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify(transactions));
   } catch (err) {
     const cached = localStorage.getItem(TRANSACTIONS_CACHE_KEY);
@@ -1702,12 +1742,9 @@ function renderApp() {
 
 async function init() {
   try {
-    const [accountsData, categoriesData] = await Promise.all([
-      apiGet('getAccounts'),
-      apiGet('getCategories')
-    ]);
-    accounts = accountsData;
-    categories = categoriesData;
+    const data = await loadAllAppData();
+    accounts = data.accounts;
+    categories = data.categories;
     localStorage.setItem(ACCOUNTS_CACHE_KEY, JSON.stringify(accounts));
     localStorage.setItem(CATEGORIES_CACHE_KEY, JSON.stringify(categories));
 
@@ -1731,13 +1768,11 @@ async function init() {
 // both advisory, so a failed fetch here just means those checks silently don't fire.
 async function loadAddTabBudgets() {
   try {
-    addTabBudgets = await apiGet('getBudgets');
+    const data = await loadAllAppData();
+    addTabBudgets = data.budgets;
+    addTabRecurring = data.recurring;
   } catch (err) {
     addTabBudgets = [];
-  }
-  try {
-    addTabRecurring = await apiGet('getRecurring');
-  } catch (err) {
     addTabRecurring = [];
   }
 }
@@ -2251,30 +2286,17 @@ async function loadDashboard(force) {
   el('dashRefreshBtn').textContent = 'Se actualizează...';
 
   try {
-    const [
-      accountsData, txData, trData, recurringData, recurringTransfersData, budgetsData,
-      categoriesData, pendingData, pendingTransfersData
-    ] = await Promise.all([
-      apiGet('getAccounts'),
-      apiGet('getTransactions'),
-      apiGet('getTransfers'),
-      apiGet('getRecurring'),
-      apiGet('getRecurringTransfers'),
-      apiGet('getBudgets'),
-      apiGet('getCategories'),
-      apiGet('getPendingConfirmations'),
-      apiGet('getPendingTransferConfirmations')
-    ]);
-    dash.accounts = accountsData;
-    dash.transactions = txData;
-    dash.transfers = trData;
-    dash.recurring = recurringData;
-    dash.recurringTransfers = recurringTransfersData;
-    dash.budgets = budgetsData;
-    dash.pending = pendingData;
-    dash.pendingTransfers = pendingTransfersData;
-    categories = categoriesData;
-    dash.fxRates = await fetchFxRatesForRecurringTransfers(dash.accounts, dash.recurringTransfers);
+    const data = await loadAllAppData(force);
+    dash.accounts = data.accounts;
+    dash.transactions = data.transactions;
+    dash.transfers = data.transfers;
+    dash.recurring = data.recurring;
+    dash.recurringTransfers = data.recurringTransfers;
+    dash.budgets = data.budgets;
+    dash.pending = data.pending;
+    dash.pendingTransfers = data.pendingTransfers;
+    categories = data.categories;
+    dash.fxRates = data.fxRates;
     dashboardLoaded = true;
     el('dashUpdatedAt').textContent = new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
     renderDashboard();
@@ -3410,11 +3432,8 @@ function updateDashboardBadge(count) {
 
 async function checkPendingBadge() {
   try {
-    const [pending, pendingTransfers] = await Promise.all([
-      apiGet('getPendingConfirmations'),
-      apiGet('getPendingTransferConfirmations')
-    ]);
-    updateDashboardBadge(pending.length + pendingTransfers.length);
+    const data = await loadAllAppData();
+    updateDashboardBadge(data.pending.length + data.pendingTransfers.length);
   } catch (err) {
     // Non-critical background check — a stale/missing badge isn't worth surfacing an error for.
   }
