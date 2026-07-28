@@ -1311,33 +1311,49 @@ function debounce(fn, delay) {
 }
 
 // Shared by Dashboard, Setări și Adaugă (budget-warning check) și de motorul de traiectorie:
-// "baza de venit" pe care se aplică un procent de buget. Ordinea de calcul, pentru orice lună:
-// 1. Venituri reale înregistrate chiar în acea lună - dacă există, câștigă ele.
-// 2. Altfel, dacă există VREUN venit real în tot istoricul, media ultimelor 3 luni pline
-//    dinaintea lunii respective (poate fi 0 dacă acele 3 luni chiar n-au avut venituri).
-// 3. Altfel (cont nou, ZERO venituri reale înregistrate vreodată): suma itemilor activi din
-//    Recurring de tip Venit - Lunar contribuie suma integrală, Anual contribuie suma/12.
+// "baza de venit" pe care se aplică un procent de buget. Calculată PER CATEGORIE de Venit
+// (din `categories`, globalul deja încărcat peste tot unde se apelează funcția asta), apoi
+// însumată. Deliberat NU se uită la venitul real încasat chiar în luna `monthKeyStr` — altfel
+// baza (și deci limitele de buget) ar sări de fiecare dată când se loghează orice venit nou,
+// chiar unul ocazional. Venitul real se compară DOAR împotriva acestei baze, niciodată invers.
+// Pentru fiecare categorie de Venit:
+// 1. Dacă are un item ACTIV în Recurring de tip Venit → echivalentul lui lunar (Lunar = suma
+//    integrală; Anual = suma integrală doar în luna proprie month_of_year, altfel suma/12).
+//    Mai multe iteme active pentru aceeași categorie se însumează.
+// 2. Altfel, media ultimelor (până la) 3 luni ANTERIOARE (nu luna curentă) care chiar au avut
+//    tranzacții reale pentru acea categorie — lunile fără nicio tranzacție nu contează la numărul
+//    de luni împărțite, ca să nu dilueze artificial media unui venit rar/sezonier.
+// 3. Altfel (nicio recurență, niciun istoric anterior), 0.
 function computeMonthIncomeBase(transactionsList, monthKeyStr, recurringList) {
-  const monthIncome = transactionsList
-    .filter(t => t.type === 'Income' && monthKey(t.date) === monthKeyStr)
-    .reduce((acc, t) => acc + Number(t.amount), 0);
-  if (monthIncome > 0) return monthIncome;
+  const monthNum = Number(monthKeyStr.split('-')[1]);
+  const incomeCategoryNames = categories.filter(c => c.type === 'Income').map(c => c.name);
 
-  const hasAnyRealIncomeEver = transactionsList.some(t => t.type === 'Income');
-  if (hasAnyRealIncomeEver) {
-    const priorMonths = [];
-    let probe = monthKeyStr;
-    for (let i = 0; i < 3; i++) { probe = addMonths(probe, -1); priorMonths.push(probe); }
-    const total = transactionsList
-      .filter(t => t.type === 'Income' && priorMonths.includes(monthKey(t.date)))
-      .reduce((acc, t) => acc + Number(t.amount), 0);
-    return total / 3;
-  }
+  const recurringMonthlyByCategory = new Map();
+  (recurringList || []).filter(r => r.active && r.type === 'Income').forEach(r => {
+    const frequency = r.frequency || 'Lunar';
+    const monthlyEquivalent = (frequency === 'Anual' && Number(r.month_of_year) !== monthNum)
+      ? Number(r.amount) / 12
+      : Number(r.amount);
+    recurringMonthlyByCategory.set(r.category, (recurringMonthlyByCategory.get(r.category) || 0) + monthlyEquivalent);
+  });
 
-  if (!recurringList || !recurringList.length) return 0;
-  return recurringList
-    .filter(r => r.active && r.type === 'Income')
-    .reduce((acc, r) => acc + (r.frequency === 'Anual' ? Number(r.amount) / 12 : Number(r.amount)), 0);
+  return incomeCategoryNames.reduce((acc, category) => {
+    if (recurringMonthlyByCategory.has(category)) {
+      return acc + recurringMonthlyByCategory.get(category);
+    }
+
+    const priorSumsByMonth = new Map();
+    transactionsList.forEach(t => {
+      if (t.type !== 'Income' || t.category !== category) return;
+      const mk = monthKey(t.date);
+      if (mk >= monthKeyStr) return;
+      priorSumsByMonth.set(mk, (priorSumsByMonth.get(mk) || 0) + Number(t.amount));
+    });
+    const recentMonthsWithData = Array.from(priorSumsByMonth.keys()).sort().reverse().slice(0, 3);
+    if (recentMonthsWithData.length === 0) return acc;
+    const total = recentMonthsWithData.reduce((sum, mk) => sum + priorSumsByMonth.get(mk), 0);
+    return acc + total / recentMonthsWithData.length;
+  }, 0);
 }
 
 // Used where the income base is always "the current month" regardless of any Dashboard
