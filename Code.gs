@@ -499,8 +499,8 @@ function getAccounts() {
   var sheet = getSheet_(SHEETS.ACCOUNTS);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 4).getValues().map(function (row) {
-    return { id: row[0], name: row[1], currency: row[2], opening_balance: row[3] };
+  return sheet.getRange(2, 1, lastRow - 1, 5).getValues().map(function (row) {
+    return { id: row[0], name: row[1], currency: row[2], opening_balance: row[3], dashboard_group: row[4] || null };
   });
 }
 
