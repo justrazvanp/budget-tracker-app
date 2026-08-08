@@ -2561,26 +2561,35 @@ function getAccountIdsByGroup(accountsList, group) {
   return accountsList.filter(a => a.dashboard_group === group).map(a => String(a.id));
 }
 
+// Net, not gross: money that came in and went straight back out (a transfer in, then an
+// expense paid from the same account, or a transfer back out) never really accumulated —
+// counting only the inflow would show fake "progress" for a transfer immediately spent back.
 function computePeriodGroupTransfers(group, from, to) {
   const accountIds = getAccountIdsByGroup(dash.accounts, group);
   if (!accountIds.length) return 0;
-  return dash.transfers
-    .filter(tr => accountIds.includes(String(tr.dest_account_id)))
-    .filter(tr => tr.date >= from && tr.date <= to)
+  const transfersIn = dash.transfers
+    .filter(tr => accountIds.includes(String(tr.dest_account_id)) && tr.date >= from && tr.date <= to)
     .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+  const transfersOut = dash.transfers
+    .filter(tr => accountIds.includes(String(tr.source_account_id)) && tr.date >= from && tr.date <= to)
+    .reduce((acc, tr) => acc + Number(tr.source_amount), 0);
+  const expensesOut = dash.transactions
+    .filter(t => t.type === 'Expense' && t.confirmed !== false && accountIds.includes(String(t.account_id)) && t.date >= from && t.date <= to)
+    .reduce((acc, t) => acc + Number(t.amount), 0);
+  return transfersIn - transfersOut - expensesOut;
 }
 
 // Same windowed-average shape as computeCategoryPredictions' historical-average branch,
-// applied to transfers into a group's accounts instead of expense transactions.
+// applied to a group's NET monthly accumulation (buildGroupMonthMap below) instead of raw
+// transfers-in.
 function computeRecentGroupMonthlyAverage(group) {
-  const accountIds = getAccountIdsByGroup(dash.accounts, group);
-  if (!accountIds.length) return null;
+  const monthMap = buildGroupMonthMap(group);
+  if (monthMap.size === 0) return null;
   const cm = currentMonthKey();
-  const pastTransfers = dash.transfers.filter(tr =>
-    accountIds.includes(String(tr.dest_account_id)) && monthKey(tr.date) !== cm);
-  if (pastTransfers.length === 0) return null;
+  const priorMonthKeys = Array.from(monthMap.keys()).filter(mk => mk !== cm);
+  if (priorMonthKeys.length === 0) return null;
 
-  const earliestMonth = pastTransfers.map(tr => monthKey(tr.date)).sort()[0];
+  const earliestMonth = priorMonthKeys.sort()[0];
   const windowMonths = [];
   let probe = cm;
   while (windowMonths.length < 6) {
@@ -2590,20 +2599,29 @@ function computeRecentGroupMonthlyAverage(group) {
   }
   if (windowMonths.length === 0) return null;
 
-  const sum = pastTransfers
-    .filter(tr => windowMonths.includes(monthKey(tr.date)))
-    .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+  const sum = windowMonths.reduce((acc, mk) => acc + (monthMap.get(mk) || 0), 0);
   return sum / windowMonths.length;
 }
 
-// monthKey -> summed amount transferred into a group's accounts.
+// monthKey -> NET amount accumulated into a group's accounts that calendar month: transfers
+// in, minus transfers out, minus confirmed Expense transactions paid directly from one of the
+// group's accounts. A month with only inflow (no outflow) is unchanged — net equals gross.
 function buildGroupMonthMap(group) {
   const accountIds = getAccountIdsByGroup(dash.accounts, group);
   const map = new Map();
+  if (!accountIds.length) return map;
+  const addToMonth = (date, delta) => {
+    const mk = monthKey(date);
+    map.set(mk, (map.get(mk) || 0) + delta);
+  };
   dash.transfers.forEach(tr => {
-    if (!accountIds.includes(String(tr.dest_account_id))) return;
-    const mk = monthKey(tr.date);
-    map.set(mk, (map.get(mk) || 0) + Number(tr.dest_amount));
+    if (accountIds.includes(String(tr.dest_account_id))) addToMonth(tr.date, Number(tr.dest_amount));
+    if (accountIds.includes(String(tr.source_account_id))) addToMonth(tr.date, -Number(tr.source_amount));
+  });
+  dash.transactions.forEach(t => {
+    if (t.type !== 'Expense' || t.confirmed === false) return;
+    if (!accountIds.includes(String(t.account_id))) return;
+    addToMonth(t.date, -Number(t.amount));
   });
   return map;
 }
