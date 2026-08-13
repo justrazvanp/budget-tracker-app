@@ -2564,18 +2564,44 @@ function getAccountIdsByGroup(accountsList, group) {
 // Net, not gross: money that came in and went straight back out (a transfer in, then an
 // expense paid from the same account, or a transfer back out) never really accumulated —
 // counting only the inflow would show fake "progress" for a transfer immediately spent back.
+// Converts a transfer's magnitude to RON: if either side of the transfer is already RON, that
+// side's recorded amount IS the real RON value (exact, at whatever rate was actually used that
+// day) — no need to reconvert. Only falls back to a live rate (dash.fxRates, pre-fetched once
+// per Dashboard load — see fetchFxRatesForRecurringTransfers) when NEITHER side is RON, which
+// is rare; falls back further to the raw source_amount if even that rate is missing.
+function transferAmountInRON(tr) {
+  const srcAcc = dash.accounts.find(a => String(a.id) === String(tr.source_account_id));
+  const dstAcc = dash.accounts.find(a => String(a.id) === String(tr.dest_account_id));
+  if (srcAcc && srcAcc.currency === 'RON') return Number(tr.source_amount);
+  if (dstAcc && dstAcc.currency === 'RON') return Number(tr.dest_amount);
+  const rate = srcAcc ? dash.fxRates[srcAcc.currency + '_RON'] : null;
+  return rate ? Number(tr.source_amount) * rate : Number(tr.source_amount);
+}
+
+// A plain transaction only has one amount, in the paying account's own currency — unlike a
+// transfer there's no already-recorded RON side to reuse, so this always needs the live rate.
+function expenseAmountInRON(t) {
+  const acc = dash.accounts.find(a => String(a.id) === String(t.account_id));
+  if (!acc || acc.currency === 'RON') return Number(t.amount);
+  const rate = dash.fxRates[acc.currency + '_RON'];
+  return rate ? Number(t.amount) * rate : Number(t.amount);
+}
+
+// Buckets compare against a RON target (percent × RON income base), so every component below
+// is expressed in RON regardless of the underlying account's own currency (e.g. Fond de
+// urgență in EUR) — see transferAmountInRON/expenseAmountInRON above.
 function computePeriodGroupTransfers(group, from, to) {
   const accountIds = getAccountIdsByGroup(dash.accounts, group);
   if (!accountIds.length) return 0;
   const transfersIn = dash.transfers
     .filter(tr => accountIds.includes(String(tr.dest_account_id)) && tr.date >= from && tr.date <= to)
-    .reduce((acc, tr) => acc + Number(tr.dest_amount), 0);
+    .reduce((acc, tr) => acc + transferAmountInRON(tr), 0);
   const transfersOut = dash.transfers
     .filter(tr => accountIds.includes(String(tr.source_account_id)) && tr.date >= from && tr.date <= to)
-    .reduce((acc, tr) => acc + Number(tr.source_amount), 0);
+    .reduce((acc, tr) => acc + transferAmountInRON(tr), 0);
   const expensesOut = dash.transactions
     .filter(t => t.type === 'Expense' && t.confirmed !== false && accountIds.includes(String(t.account_id)) && t.date >= from && t.date <= to)
-    .reduce((acc, t) => acc + Number(t.amount), 0);
+    .reduce((acc, t) => acc + expenseAmountInRON(t), 0);
   return transfersIn - transfersOut - expensesOut;
 }
 
@@ -2603,9 +2629,10 @@ function computeRecentGroupMonthlyAverage(group) {
   return sum / windowMonths.length;
 }
 
-// monthKey -> NET amount accumulated into a group's accounts that calendar month: transfers
-// in, minus transfers out, minus confirmed Expense transactions paid directly from one of the
-// group's accounts. A month with only inflow (no outflow) is unchanged — net equals gross.
+// monthKey -> NET amount accumulated into a group's accounts that calendar month, in RON
+// (see transferAmountInRON/expenseAmountInRON): transfers in, minus transfers out, minus
+// confirmed Expense transactions paid directly from one of the group's accounts. A month with
+// only inflow (no outflow) is unchanged — net equals gross.
 function buildGroupMonthMap(group) {
   const accountIds = getAccountIdsByGroup(dash.accounts, group);
   const map = new Map();
@@ -2615,24 +2642,26 @@ function buildGroupMonthMap(group) {
     map.set(mk, (map.get(mk) || 0) + delta);
   };
   dash.transfers.forEach(tr => {
-    if (accountIds.includes(String(tr.dest_account_id))) addToMonth(tr.date, Number(tr.dest_amount));
-    if (accountIds.includes(String(tr.source_account_id))) addToMonth(tr.date, -Number(tr.source_amount));
+    if (accountIds.includes(String(tr.dest_account_id))) addToMonth(tr.date, transferAmountInRON(tr));
+    if (accountIds.includes(String(tr.source_account_id))) addToMonth(tr.date, -transferAmountInRON(tr));
   });
   dash.transactions.forEach(t => {
     if (t.type !== 'Expense' || t.confirmed === false) return;
     if (!accountIds.includes(String(t.account_id))) return;
-    addToMonth(t.date, -Number(t.amount));
+    addToMonth(t.date, -expenseAmountInRON(t));
   });
   return map;
 }
 
 const PROJECTION_MONTHS_DEFAULT = 6;
 
-// Pre-fetches an FX rate for every distinct currency pair among active, cross-currency
-// recurring transfers, once per Dashboard/Simulator load — so the (synchronous) projection
-// math below never needs to await a network call mid-computation. A failed lookup for a
-// given pair just leaves it out of the cache; estimateRecurringTransferSideAmount falls
-// back to the fixed amount itself when a rate is missing.
+// Pre-fetches every FX rate needed synchronously elsewhere on the Dashboard, once per
+// Dashboard/Simulator load — so downstream math never awaits a network call mid-computation:
+// one rate per distinct currency pair among active, cross-currency recurring transfers, plus
+// one "X_RON" rate per distinct non-RON account currency (transferAmountInRON/
+// expenseAmountInRON's rare fallback, needed to express the accumulation buckets in RON
+// regardless of the underlying account's own currency). A failed lookup for a given pair just
+// leaves it out of the cache; consumers fall back to the raw, unconverted amount.
 async function fetchFxRatesForRecurringTransfers(accountsList, recurringTransfersList) {
   const pairs = new Set();
   recurringTransfersList.filter(rt => rt.active).forEach(rt => {
@@ -2645,6 +2674,9 @@ async function fetchFxRatesForRecurringTransfers(accountsList, recurringTransfer
     const from = fixedSide === 'source' ? srcAcc.currency : dstAcc.currency;
     const to = fixedSide === 'source' ? dstAcc.currency : srcAcc.currency;
     pairs.add(from + '_' + to);
+  });
+  accountsList.forEach(a => {
+    if (a.currency && a.currency !== 'RON') pairs.add(a.currency + '_RON');
   });
 
   const rates = {};
