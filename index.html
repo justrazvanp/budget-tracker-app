@@ -2821,6 +2821,16 @@ function computeTrajectory(monthsAhead) {
   };
 }
 
+// Floating-point drift (e.g. 1270.42 stored internally as 1270.4199999997) can make a total
+// that's exactly equal to its target — at the precision actually displayed — compare as just
+// under it. Round both sides to money's real precision (2 decimals) before comparing, so a
+// display-equal amount is always treated as "reached", never a false red. Shared by every
+// "did this accumulation bucket reach its target" check (mobile cards, desktop tables,
+// Traiectorie's recent average) across all three buckets.
+function reachedAccumulationTarget(actual, target) {
+  return Math.round(actual * 100) / 100 >= Math.round(target * 100) / 100;
+}
+
 // Mirrors Investiții/Fond de rezervă/Fond de urgență identically — actual = transfers into
 // that bucket's accounts this period, target = that bucket's Budgets.percent row (if set)
 // applied to the period's income base. Reaching/exceeding the target is the goal (inverted vs.
@@ -2841,7 +2851,7 @@ function renderGroupBudgetSection(containerId, group, budgetCategory, actualLabe
   }
 
   const pct = (actual / target) * 100;
-  const met = actual >= target;
+  const met = reachedAccumulationTarget(actual, target);
   container.innerHTML = `<div class="bar-row">
     <div class="bar-row-top"><span>${escapeHtml(actualLabel)}</span><span>${actual.toFixed(2)}</span></div>
     <div class="bar-track"><div class="bar-fill ${met ? 'ok' : 'over'}" style="width:${Math.min(pct, 100)}%"></div></div>
@@ -3004,7 +3014,7 @@ function budgetTableAmountCell(value, colspan) {
 function budgetTableVsTargetCell(actual, target, isInvestmentRow) {
   if (target === null || !(target > 0)) return `<td class="budget-table-empty">–</td>`;
   const pct = (actual / target) * 100;
-  const good = isInvestmentRow ? actual >= target : actual <= target;
+  const good = isInvestmentRow ? reachedAccumulationTarget(actual, target) : actual <= target;
   return `<td><div class="bar-track budget-table-vs-track"><div class="bar-fill ${good ? 'ok' : 'over'}" style="width:${Math.min(Math.max(pct, 0), 100)}%"></div></div></td>`;
 }
 
@@ -3265,7 +3275,7 @@ function renderTrajectorySection() {
   const investRow = (label, target, recentAvg) => {
     if (target === null) return '';
     const recentText = recentAvg !== null ? recentAvg.toFixed(2) : 'date insuficiente';
-    const met = recentAvg !== null && recentAvg >= target;
+    const met = recentAvg !== null && reachedAccumulationTarget(recentAvg, target);
     return `<div class="predict-row">
       <span class="predict-cat">${escapeHtml(label)} — medie recentă vs. țintă lunară</span>
       <span class="predict-values"><span class="${met ? '' : 'predict-over'}">${recentText} / ${target.toFixed(2)} lei</span></span>
