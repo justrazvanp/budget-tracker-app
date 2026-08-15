@@ -2821,14 +2821,18 @@ function computeTrajectory(monthsAhead) {
   };
 }
 
-// Floating-point drift (e.g. 1270.42 stored internally as 1270.4199999997) can make a total
-// that's exactly equal to its target — at the precision actually displayed — compare as just
-// under it. Round both sides to money's real precision (2 decimals) before comparing, so a
-// display-equal amount is always treated as "reached", never a false red. Shared by every
-// "did this accumulation bucket reach its target" check (mobile cards, desktop tables,
-// Traiectorie's recent average) across all three buckets.
+// Floating-point drift (e.g. a target of exactly 19.5% * 6515 = 1270.425, stored internally as
+// 1270.4249999999999545) can make a total that's exactly equal to its target — at the
+// precision actually displayed — compare as just under it. Math.round(v*100)/100 is NOT safe
+// here: it disagrees with .toFixed(2) at exact half-cent boundaries (Math.round rounds
+// 127042.5 up to 127043, while .toFixed(2) rounds the true 1270.42499999999995 down to
+// "1270.42"), which silently re-introduces the same mismatch one cent higher. Round both sides
+// with .toFixed(2) — the exact same rounding the UI uses to display them — so the comparison
+// can never disagree with what's on screen. Shared by every "did this accumulation bucket
+// reach its target" check (mobile cards, desktop tables, Traiectorie's recent average) across
+// all three buckets.
 function reachedAccumulationTarget(actual, target) {
-  return Math.round(actual * 100) / 100 >= Math.round(target * 100) / 100;
+  return Number(actual.toFixed(2)) >= Number(target.toFixed(2));
 }
 
 // Mirrors Investiții/Fond de rezervă/Fond de urgență identically — actual = transfers into
