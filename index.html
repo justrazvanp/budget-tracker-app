@@ -640,16 +640,32 @@
 
     .chart-wrap { height: 320px; }
 
+    #dashAllocationChartCard .chart-wrap { height: 380px; }
+
+    .chart-warning-msg {
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      color: var(--warning-text);
+      font-weight: 600;
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
     #dashContent {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(12, 1fr);
       gap: 16px;
       grid-template-areas:
-        "period period totalcompare balances"
-        "mtd mtd ytd ytd"
-        "catchart catchart trendext trendext"
-        "predictions predictions trajectory trajectory"
-        "pending pending pending pending";
+        "period period period period period period totalcompare totalcompare totalcompare balances balances balances"
+        "mtd mtd mtd mtd mtd mtd ytd ytd ytd ytd ytd ytd"
+        "alloc alloc alloc alloc alloc alloc alloc alloc alloc alloc alloc alloc"
+        "incomechart incomechart incomechart incomechart catchart catchart catchart catchart investchart investchart investchart investchart"
+        "trendext trendext trendext trendext trendext trendext trendext trendext trendext trendext trendext trendext"
+        "predictions predictions predictions predictions predictions predictions trajectory trajectory trajectory trajectory trajectory trajectory"
+        "pending pending pending pending pending pending pending pending pending pending pending pending";
     }
 
     #dashContent > .card { margin-bottom: 0; }
@@ -659,7 +675,10 @@
     #dashTotalCompare { grid-area: totalcompare; }
     #dashMtdTableCard { grid-area: mtd; }
     #dashYtdTableCard { grid-area: ytd; }
+    #dashAllocationChartCard { grid-area: alloc; }
+    #dashIncomeChartCard { grid-area: incomechart; }
     #dashCategoryChartCard { grid-area: catchart; }
+    #dashInvestmentChartCard { grid-area: investchart; }
     #dashTrendChartExtCard { grid-area: trendext; }
     #dashPredictionsCard { grid-area: predictions; }
     #dashTrajectoryCard { grid-area: trajectory; }
@@ -860,10 +879,29 @@
         <div class="table-scroll"><table class="budget-table" id="dashYtdTable"></table></div>
       </div>
 
+      <div class="card" id="dashAllocationChartCard">
+        <div class="section-title">Alocarea venitului</div>
+        <div id="dashAllocationChartEmpty" class="empty-state hidden">Niciun venit real încasat în perioada selectată.</div>
+        <div id="dashAllocationOverspendMsg" class="chart-warning-msg hidden"></div>
+        <div class="chart-wrap"><canvas id="dashAllocationChart"></canvas></div>
+      </div>
+
+      <div class="card" id="dashIncomeChartCard">
+        <div class="section-title">Venituri pe categorii</div>
+        <div id="dashIncomeChartEmpty" class="empty-state hidden">Niciun venit real încasat în perioada selectată.</div>
+        <div class="chart-wrap"><canvas id="dashIncomeChart"></canvas></div>
+      </div>
+
       <div class="card" id="dashCategoryChartCard">
         <div class="section-title">Cheltuieli pe categorii</div>
         <div id="dashCategoryChartEmpty" class="empty-state hidden">Nu există cheltuieli în perioada selectată.</div>
         <div class="chart-wrap"><canvas id="dashCategoryChart"></canvas></div>
+      </div>
+
+      <div class="card" id="dashInvestmentChartCard">
+        <div class="section-title">Investiții pe grup</div>
+        <div id="dashInvestmentChartEmpty" class="empty-state hidden">Niciun progres net de investiții în perioada selectată.</div>
+        <div class="chart-wrap"><canvas id="dashInvestmentChart"></canvas></div>
       </div>
 
       <div class="card dash-desktop-only" id="dashTrendChartExtCard">
@@ -2245,7 +2283,10 @@ function syncDashPeriodUI() {
 }
 
 function renderDashboardPeriodSections() {
+  renderAllocationChart();
+  renderIncomeChart();
   renderCategoryChart();
+  renderInvestmentGroupChart();
   renderCategorySpend();
   renderInvestmentSection();
   renderReserveSection();
@@ -2356,6 +2397,23 @@ function computePeriodExpenseByCategory(from, to) {
     sums.set(t.category, (sums.get(t.category) || 0) + Number(t.amount));
   });
   return sums;
+}
+
+function computePeriodIncomeByCategory(from, to) {
+  const sums = new Map();
+  dash.transactions.forEach(t => {
+    if (t.confirmed === false) return; // not real income yet
+    if (t.type !== 'Income') return;
+    if (t.date < from || t.date > to) return;
+    sums.set(t.category, (sums.get(t.category) || 0) + Number(t.amount));
+  });
+  return sums;
+}
+
+function sumMapValues(map) {
+  let total = 0;
+  map.forEach(v => { total += v; });
+  return total;
 }
 
 function getBudgetPercent(category) {
@@ -2877,14 +2935,148 @@ function renderEmergencyFundSection() {
 
 const CHART_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#9333ea', '#0d9488'];
 
+// Shared "no real income yet" message used by all four period-allocation pie charts when
+// venit_real_total (confirmed Income in the selected period) is zero — overrides each chart's
+// own empty-state text for this specific edge case, without touching its own calculation.
+const NO_REAL_INCOME_MSG = 'Niciun venit real încasat în perioada selectată.';
+
+let dashAllocationChartInstance = null;
+function renderAllocationChart() {
+  if (typeof Chart === 'undefined') return;
+  const incomeTotal = sumMapValues(computePeriodIncomeByCategory(dashPeriod.from, dashPeriod.to));
+  const emptyEl = el('dashAllocationChartEmpty');
+  const overspendEl = el('dashAllocationOverspendMsg');
+  const canvas = el('dashAllocationChart');
+
+  if (incomeTotal === 0) {
+    emptyEl.textContent = NO_REAL_INCOME_MSG;
+    emptyEl.classList.remove('hidden');
+    overspendEl.classList.add('hidden');
+    canvas.classList.add('hidden');
+    if (dashAllocationChartInstance) { dashAllocationChartInstance.destroy(); dashAllocationChartInstance = null; }
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  canvas.classList.remove('hidden');
+
+  const expenses = sumMapValues(computePeriodExpenseByCategory(dashPeriod.from, dashPeriod.to));
+  const investments = computePeriodGroupTransfers(DASHBOARD_GROUP_INVESTMENTS, dashPeriod.from, dashPeriod.to)
+    + computePeriodGroupTransfers(DASHBOARD_GROUP_RESERVE, dashPeriod.from, dashPeriod.to)
+    + computePeriodGroupTransfers(DASHBOARD_GROUP_EMERGENCY, dashPeriod.from, dashPeriod.to);
+  const remaining = incomeTotal - expenses - investments;
+
+  let labels, data;
+  if (remaining < 0) {
+    overspendEl.textContent = `Ai cheltuit/investit mai mult decât ai încasat până acum în perioada selectată: ${remaining.toFixed(2)} lei`;
+    overspendEl.classList.remove('hidden');
+    labels = ['Cheltuieli', 'Investiții'];
+    data = [expenses, Math.max(0, investments)];
+  } else {
+    overspendEl.classList.add('hidden');
+    labels = ['Cheltuieli', 'Investiții', 'Neconsumat / Rămas'];
+    data = [expenses, Math.max(0, investments), remaining];
+  }
+  const colors = ['#dc2626', '#7c3aed', '#16a34a'].slice(0, labels.length);
+
+  if (dashAllocationChartInstance) {
+    dashAllocationChartInstance.data.labels = labels;
+    dashAllocationChartInstance.data.datasets[0].data = data;
+    dashAllocationChartInstance.data.datasets[0].backgroundColor = colors;
+    dashAllocationChartInstance.update();
+    return;
+  }
+
+  dashAllocationChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const total = ctx.dataset.data.reduce((acc, v) => acc + v, 0);
+              const pct = total > 0 ? (ctx.parsed / total) * 100 : 0;
+              return `${ctx.label}: ${ctx.parsed.toFixed(2)} (${pct.toFixed(1)}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+let dashIncomeChartInstance = null;
+function renderIncomeChart() {
+  if (typeof Chart === 'undefined') return;
+  const sums = computePeriodIncomeByCategory(dashPeriod.from, dashPeriod.to);
+  const emptyEl = el('dashIncomeChartEmpty');
+  const canvas = el('dashIncomeChart');
+
+  if (sums.size === 0) {
+    emptyEl.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    if (dashIncomeChartInstance) { dashIncomeChartInstance.destroy(); dashIncomeChartInstance = null; }
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  canvas.classList.remove('hidden');
+
+  const entries = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
+  const labels = entries.map(([cat]) => cat);
+  const data = entries.map(([, sum]) => sum);
+
+  if (dashIncomeChartInstance) {
+    dashIncomeChartInstance.data.labels = labels;
+    dashIncomeChartInstance.data.datasets[0].data = data;
+    dashIncomeChartInstance.data.datasets[0].backgroundColor = labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
+    dashIncomeChartInstance.update();
+    return;
+  }
+
+  dashIncomeChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const total = ctx.dataset.data.reduce((acc, v) => acc + v, 0);
+              const pct = total > 0 ? (ctx.parsed / total) * 100 : 0;
+              return `${ctx.label}: ${ctx.parsed.toFixed(2)} (${pct.toFixed(1)}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
 let dashCategoryChartInstance = null;
 function renderCategoryChart() {
   if (typeof Chart === 'undefined') return;
-  const sums = computePeriodExpenseByCategory(dashPeriod.from, dashPeriod.to);
   const emptyEl = el('dashCategoryChartEmpty');
   const canvas = el('dashCategoryChart');
 
+  const incomeTotal = sumMapValues(computePeriodIncomeByCategory(dashPeriod.from, dashPeriod.to));
+  if (incomeTotal === 0) {
+    emptyEl.textContent = NO_REAL_INCOME_MSG;
+    emptyEl.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    if (dashCategoryChartInstance) { dashCategoryChartInstance.destroy(); dashCategoryChartInstance = null; }
+    return;
+  }
+
+  const sums = computePeriodExpenseByCategory(dashPeriod.from, dashPeriod.to);
+
   if (sums.size === 0) {
+    emptyEl.textContent = 'Nu există cheltuieli în perioada selectată.';
     emptyEl.classList.remove('hidden');
     canvas.classList.add('hidden');
     if (dashCategoryChartInstance) { dashCategoryChartInstance.destroy(); dashCategoryChartInstance = null; }
@@ -2908,6 +3100,70 @@ function renderCategoryChart() {
   dashCategoryChartInstance = new Chart(canvas.getContext('2d'), {
     type: 'doughnut',
     data: { labels, datasets: [{ data, backgroundColor: labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const total = ctx.dataset.data.reduce((acc, v) => acc + v, 0);
+              const pct = total > 0 ? (ctx.parsed / total) * 100 : 0;
+              return `${ctx.label}: ${ctx.parsed.toFixed(2)} (${pct.toFixed(1)}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+let dashInvestmentChartInstance = null;
+function renderInvestmentGroupChart() {
+  if (typeof Chart === 'undefined') return;
+  const emptyEl = el('dashInvestmentChartEmpty');
+  const canvas = el('dashInvestmentChart');
+
+  const incomeTotal = sumMapValues(computePeriodIncomeByCategory(dashPeriod.from, dashPeriod.to));
+  if (incomeTotal === 0) {
+    emptyEl.textContent = NO_REAL_INCOME_MSG;
+    emptyEl.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    if (dashInvestmentChartInstance) { dashInvestmentChartInstance.destroy(); dashInvestmentChartInstance = null; }
+    return;
+  }
+
+  const investNet = computePeriodGroupTransfers(DASHBOARD_GROUP_INVESTMENTS, dashPeriod.from, dashPeriod.to);
+  const reserveNet = computePeriodGroupTransfers(DASHBOARD_GROUP_RESERVE, dashPeriod.from, dashPeriod.to);
+  const emergencyNet = computePeriodGroupTransfers(DASHBOARD_GROUP_EMERGENCY, dashPeriod.from, dashPeriod.to);
+  const totalNet = investNet + reserveNet + emergencyNet;
+
+  if (totalNet <= 0) {
+    emptyEl.textContent = 'Niciun progres net de investiții în perioada selectată.';
+    emptyEl.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    if (dashInvestmentChartInstance) { dashInvestmentChartInstance.destroy(); dashInvestmentChartInstance = null; }
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  canvas.classList.remove('hidden');
+
+  const labels = ['Investiții', 'Fond de rezervă', 'Fond de urgență'];
+  const data = [Math.max(0, investNet), Math.max(0, reserveNet), Math.max(0, emergencyNet)];
+  const colors = ['#7c3aed', '#0891b2', '#db2777'];
+
+  if (dashInvestmentChartInstance) {
+    dashInvestmentChartInstance.data.labels = labels;
+    dashInvestmentChartInstance.data.datasets[0].data = data;
+    dashInvestmentChartInstance.data.datasets[0].backgroundColor = colors;
+    dashInvestmentChartInstance.update();
+    return;
+  }
+
+  dashInvestmentChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
     options: {
       responsive: true,
       maintainAspectRatio: false,
