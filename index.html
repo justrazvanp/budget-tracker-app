@@ -2822,6 +2822,48 @@ function computeAccountProjection(account, monthsAhead, extra) {
   return { account, startingBalance, incomeBase, months };
 }
 
+// Projects an account's balance to a target date WITHIN the current month — unlike
+// computeAccountProjection's loop (which only ever adds whole future calendar months, and so
+// returns the raw current balance unchanged for a same-month target), this walks the
+// account's own recurring items due on or before the target day and adds/subtracts only the
+// ones not yet reflected in the current balance. Deliberately limited to recurring items —
+// see the accompanying UI note for variable/unplanned spend this doesn't account for.
+function computeCurrentMonthRemaining(account, targetDate) {
+  const targetDay = Number(targetDate.split('-')[2]);
+  const currentMonth = currentMonthKey();
+  const currentMonthNum = Number(currentMonth.split('-')[1]);
+  const accountRecurring = dash.recurring.filter(r => String(r.account_id) === String(account.id));
+  const startingBalance = computeBalances().get(String(account.id)) || 0;
+
+  let remainingIncome = 0;
+  let remainingExpense = 0;
+
+  accountRecurring.filter(r => r.active).forEach(r => {
+    const frequency = r.frequency || 'Lunar';
+    if (frequency === 'Anual' && Number(r.month_of_year) !== currentMonthNum) return;
+    if (Number(r.day_of_month) > targetDay) return;
+
+    if (r.type === 'Income') {
+      // Already generated AND confirmed this month -> those funds are already inside
+      // startingBalance. Not yet generated, or generated but still awaiting confirmation in
+      // "De confirmat" -> the money isn't in the balance yet, so it still counts as remaining.
+      const alreadyConfirmed = dash.transactions.some(t =>
+        t.confirmed === true && String(t.recurring_id) === String(r.id) && monthKey(t.date) === currentMonth
+      );
+      if (!alreadyConfirmed) remainingIncome += Number(r.amount);
+    } else if (r.type === 'Expense') {
+      // Once generated, an Expense (confirmed or not) is already subtracted from the balance
+      // (unconfirmed Expense still counts, per the existing safety-net rule) — only a not-yet-
+      // generated item still needs to be subtracted here.
+      if (r.last_generated_period !== currentMonth) {
+        remainingExpense += Number(r.amount);
+      }
+    }
+  });
+
+  return startingBalance + remainingIncome - remainingExpense;
+}
+
 // Would adding `extraMonthlyAmount` to `category`'s monthly spend push it over its budget
 // target? Uses the pooled (all-accounts) income base and prediction, matching how budget
 // targets are defined everywhere else — null when the category has no target at all.
@@ -4719,8 +4761,9 @@ function renderSimulatorOnetimeResult(account, category, amount, targetDate) {
   const targetMonth = monthKey(targetDate);
   const cm = currentMonthKey();
   const monthsAhead = Math.max(0, countMonthsInPeriod(cm, targetMonth) - 1);
-  const projection = computeAccountProjection(account, monthsAhead);
-  const projectedBalance = monthsAhead === 0 ? projection.startingBalance : projection.months[monthsAhead - 1].balance;
+  const projectedBalance = monthsAhead === 0
+    ? computeCurrentMonthRemaining(account, targetDate)
+    : computeAccountProjection(account, monthsAhead).months[monthsAhead - 1].balance;
   const shortfall = amount - projectedBalance;
 
   let resultHtml = `<div class="card">
@@ -4733,6 +4776,9 @@ function renderSimulatorOnetimeResult(account, category, amount, targetDate) {
   } else {
     const extra = monthsAhead > 0 ? shortfall / monthsAhead : null;
     resultHtml += `<div class="banner warning show" style="margin-top:12px;">Insuficient — lipsesc ${shortfall.toFixed(2)} ${account.currency}.${extra !== null ? ` Ar trebui economisit suplimentar ${extra.toFixed(2)} ${account.currency}/lună până atunci.` : ' Data țintă e prea aproape pentru a calcula o economie lunară.'}</div>`;
+  }
+  if (monthsAhead === 0) {
+    resultHtml += `<div class="hint" style="margin-top:8px;">Estimarea include doar recurențele definite, nu și cheltuielile variabile neplanificate care ar putea mai apărea până atunci.</div>`;
   }
   resultHtml += `</div>`;
 

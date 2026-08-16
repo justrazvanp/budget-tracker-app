@@ -532,6 +532,7 @@ function getTransactions(p) {
         category: row[4],
         description: row[5],
         amount: row[6],
+        recurring_id: row[7],
         confirmed: row[8] === true || String(row[8]).toUpperCase() === 'TRUE'
       };
     })
