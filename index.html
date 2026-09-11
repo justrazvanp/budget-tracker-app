@@ -509,10 +509,14 @@
 
   .pending-confirm-row {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 8px;
     align-items: center;
   }
+
+  .pending-cancel-btn { flex-shrink: 0; white-space: nowrap; }
+  .pending-cancel-btn:disabled { opacity: 0.6; cursor: default; }
 
   .pending-amount-input { flex: 1; }
   .pending-transfer-amount-input { flex: 1; min-width: 0; }
@@ -3614,6 +3618,7 @@ function renderPendingConfirmations() {
         <div class="pending-confirm-row">
           <input type="number" min="0" step="0.01" class="pending-amount-input" value="${p.amount}">
           <button type="button" class="pending-confirm-btn">Confirmă</button>
+          <button type="button" class="icon-btn pending-cancel-btn" data-label="${escapeHtml(p.description || p.category)}">Anulează pentru luna asta</button>
         </div>
       </div>`;
     }).join('');
@@ -3656,6 +3661,7 @@ function renderPendingConfirmations() {
             ${destTag}
           </div>
           <button type="button" class="pending-confirm-btn">Confirmă</button>
+          <button type="button" class="icon-btn pending-cancel-btn" data-label="${escapeHtml(tr.description || `${srcAccount ? srcAccount.name : '?'} → ${dstAccount ? dstAccount.name : '?'}`)}">Anulează pentru luna asta</button>
         </div>
       </div>`;
     }).join('');
@@ -3663,6 +3669,42 @@ function renderPendingConfirmations() {
 }
 
 el('dashPendingList').addEventListener('click', async (e) => {
+  const cancelBtn = e.target.closest('.pending-cancel-btn');
+  if (cancelBtn) {
+    const item = cancelBtn.closest('.list-item');
+    const id = item.dataset.id;
+    const label = cancelBtn.dataset.label || 'acest item';
+    if (!confirm(`Sigur anulezi ${label} pentru luna asta? Nu se va regenera până luna viitoare.`)) return;
+
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Se anulează...';
+    try {
+      const data = await apiPost('deleteTransaction', { id });
+      dash.pending = dash.pending.filter(p => String(p.id) !== String(id));
+      dash.transactions = dash.transactions.filter(t => String(t.id) !== String(id));
+
+      renderPendingConfirmations();
+      renderTotalCompare();
+      renderBalances();
+      renderCategorySpend();
+      renderPredictions();
+      renderMtdTable();
+      renderYtdTable();
+      updateDashboardBadge(dash.pending.length + dash.pendingTransfers.length);
+
+      const account = dash.accounts.find(a => String(a.id) === String(data.account_id));
+      showGlobalBanner(
+        `Anulat! Sold ${account ? account.name : ''}: ${Number(data.balance).toFixed(2)} ${account ? account.currency : ''}`,
+        'success'
+      );
+    } catch (err) {
+      showGlobalBanner('Eroare la anulare: ' + err.message, 'error');
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = 'Anulează pentru luna asta';
+    }
+    return;
+  }
+
   const btn = e.target.closest('.pending-confirm-btn');
   if (!btn) return;
   const item = btn.closest('.list-item');
@@ -3703,6 +3745,44 @@ el('dashPendingList').addEventListener('click', async (e) => {
 });
 
 el('dashPendingTransferList').addEventListener('click', async (e) => {
+  const cancelBtn = e.target.closest('.pending-cancel-btn');
+  if (cancelBtn) {
+    const item = cancelBtn.closest('.list-item');
+    const id = item.dataset.id;
+    const label = cancelBtn.dataset.label || 'acest transfer';
+    if (!confirm(`Sigur anulezi ${label} pentru luna asta? Nu se va regenera până luna viitoare.`)) return;
+
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Se anulează...';
+    try {
+      const data = await apiPost('deleteTransfer', { id });
+      dash.pendingTransfers = dash.pendingTransfers.filter(t => String(t.id) !== String(id));
+      dash.transfers = dash.transfers.filter(t => String(t.id) !== String(id));
+
+      renderPendingConfirmations();
+      renderTotalCompare();
+      renderBalances();
+      renderMtdTable();
+      renderDashboardPeriodSections();
+      renderPredictions();
+      renderTrajectorySection();
+      updateDashboardBadge(dash.pending.length + dash.pendingTransfers.length);
+
+      const srcAcc = dash.accounts.find(a => String(a.id) === String(data.source_account.account_id));
+      const dstAcc = dash.accounts.find(a => String(a.id) === String(data.dest_account.account_id));
+      showGlobalBanner(
+        `Anulat! Sold ${srcAcc ? srcAcc.name : ''}: ${Number(data.source_account.balance).toFixed(2)} ${srcAcc ? srcAcc.currency : ''} · ` +
+        `Sold ${dstAcc ? dstAcc.name : ''}: ${Number(data.dest_account.balance).toFixed(2)} ${dstAcc ? dstAcc.currency : ''}`,
+        'success'
+      );
+    } catch (err) {
+      showGlobalBanner('Eroare la anulare: ' + err.message, 'error');
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = 'Anulează pentru luna asta';
+    }
+    return;
+  }
+
   const btn = e.target.closest('.pending-confirm-btn');
   if (!btn) return;
   const item = btn.closest('.list-item');
