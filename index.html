@@ -2489,6 +2489,14 @@ function computeCategoryPredictions(transactionsList, recurringList, expenseCate
     if (configuredRecurringCategories.has(category)) {
       return { category, amount: 0, source: 'recurring-off-cycle' };
     }
+    // Account-restricted categories (e.g. Cheltuieli pe termen lung/Neprevăzute, Vacanțe) are
+    // by definition irregular/one-off — with no active recurring definition, a handful of
+    // real transactions (often from a single short window) shouldn't be averaged into a
+    // monthly rate and then extrapolated identically into every future month.
+    const categoryDef = categories.find(c => c.name === category && c.type === 'Expense');
+    if (categoryDef && categoryDef.restricted_account_id) {
+      return { category, amount: null, source: 'irregular' };
+    }
     if (windowMonths.length === 0) {
       return { category, amount: null, source: 'insufficient' };
     }
@@ -3546,7 +3554,11 @@ function renderPredictions() {
   container.innerHTML = predictions.map(p => {
     const limit = getBudgetLimitLei(p.category, incomeBase);
     let valuesHtml;
-    if (p.amount === null) {
+    if (p.amount === null && p.source === 'irregular') {
+      valuesHtml = limit !== null
+        ? `<span class="subtle">Neregulat — nu se poate estima lunar · Limită maximă: ${limit.toFixed(2)} lei</span>`
+        : `<span class="subtle">Neregulat — nu se poate estima lunar</span>`;
+    } else if (p.amount === null) {
       valuesHtml = limit !== null
         ? `<span class="subtle">Date insuficiente pentru predicție · Limită maximă: ${limit.toFixed(2)} lei</span>`
         : `<span class="subtle">Date insuficiente</span>`;
