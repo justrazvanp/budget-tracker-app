@@ -507,21 +507,24 @@
 
   .list-item-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
 
+  /* Mobile-first: fields and buttons stacked full-width, one per row (each amount field's
+     label above its input via column-reverse) — see the >=768px override below, which
+     restores the side-by-side row layout unchanged for desktop. */
   .pending-confirm-row {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
     gap: 8px;
     margin-top: 8px;
-    align-items: center;
   }
 
-  .pending-cancel-btn { flex-shrink: 0; white-space: nowrap; }
+  .pending-cancel-btn { width: 100%; }
   .pending-cancel-btn:disabled { opacity: 0.6; cursor: default; }
 
-  .pending-amount-input { flex: 1; }
-  .pending-transfer-amount-input { flex: 1; min-width: 0; }
+  .pending-amount-input { width: 100%; }
+  .pending-transfer-amount-input { width: 100%; }
 
-  .pending-transfer-field { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .pending-transfer-field { width: 100%; display: flex; flex-direction: column-reverse; gap: 3px; }
 
   .pending-amount-tag { font-size: 0.66rem; font-weight: 700; line-height: 1.2; }
   .pending-amount-tag.pending-amount-fixed { color: var(--muted); }
@@ -530,7 +533,7 @@
   .pending-transfer-amount-input[readonly] { background: var(--bg); color: var(--muted); }
 
   .pending-confirm-btn {
-    flex-shrink: 0;
+    width: 100%;
     border: none;
     background: var(--accent);
     color: var(--accent-text);
@@ -641,6 +644,14 @@
     }
 
     #tab-add #content { max-width: 480px; margin: 0 auto; }
+
+    /* Restores the pre-mobile-fix side-by-side layout — unchanged from before. */
+    .pending-confirm-row { flex-direction: row; flex-wrap: wrap; align-items: center; }
+    .pending-cancel-btn { width: auto; flex-shrink: 0; white-space: nowrap; }
+    .pending-amount-input { width: auto; flex: 1; }
+    .pending-transfer-amount-input { width: auto; flex: 1; min-width: 0; }
+    .pending-transfer-field { width: auto; flex: 1; min-width: 0; flex-direction: column; }
+    .pending-confirm-btn { width: auto; flex-shrink: 0; }
 
     .chart-wrap { height: 320px; }
 
