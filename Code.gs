@@ -310,6 +310,31 @@ function setupRecurringTransferFixedSideMigration() {
   sheet.getRange(1, 5).setValue('fixed_amount');
 }
 
+// Adds is_credit_account to Accounts (FALSE by default), then adds a new "Card de credit"
+// account with it set to TRUE. A negative balance is that account's normal state (unpaid
+// charges still owed), not a warning signal like every other account — is_credit_account is
+// what the frontend checks to skip the negative-balance warning and label the debt clearly.
+// Safe to re-run.
+function setupCreditAccountMigration() {
+  var sheet = getSheet_(SHEETS.ACCOUNTS);
+  if (sheet.getRange(1, 6).getValue() !== 'is_credit_account') {
+    sheet.getRange(1, 6).setValue('is_credit_account');
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      var defaults = [];
+      for (var i = 0; i < lastRow - 1; i++) defaults.push([false]);
+      sheet.getRange(2, 6, lastRow - 1, 1).setValues(defaults);
+    }
+  }
+
+  var lastRow2 = sheet.getLastRow();
+  var names = lastRow2 > 1 ? sheet.getRange(2, 2, lastRow2 - 1, 1).getValues().map(function (r) { return r[0]; }) : [];
+  if (names.indexOf('Card de credit') === -1) {
+    var id = nextId_(sheet);
+    sheet.appendRow([id, 'Card de credit', 'RON', 0, '', true]);
+  }
+}
+
 // Manual-only reset: wipes Transactions/Transfers and zeroes every opening_balance.
 // Not exposed via doGet/doPost — run it directly from the Apps Script editor when you want
 // to blank the ledger back to the initial seed state without touching account/category rows.
@@ -499,8 +524,11 @@ function getAccounts() {
   var sheet = getSheet_(SHEETS.ACCOUNTS);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 5).getValues().map(function (row) {
-    return { id: row[0], name: row[1], currency: row[2], opening_balance: row[3], dashboard_group: row[4] || null };
+  return sheet.getRange(2, 1, lastRow - 1, 6).getValues().map(function (row) {
+    return {
+      id: row[0], name: row[1], currency: row[2], opening_balance: row[3], dashboard_group: row[4] || null,
+      is_credit_account: row[5] === true || String(row[5]).toUpperCase() === 'TRUE'
+    };
   });
 }
 

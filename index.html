@@ -1893,12 +1893,15 @@ function showNegativeBalanceWarning(message) {
 // Advisory only — returns true (proceed) whenever the balance can't be determined, so a
 // failed lookup (e.g. offline) never blocks the user from logging a transaction.
 async function confirmNoNegativeBalance(accountId, amount) {
+  const account = getAccountById(accountId);
+  // A credit-card account's balance is meant to go negative (unpaid charges) — that's not a
+  // problem worth interrupting the user over, unlike every other account.
+  if (account && account.is_credit_account) return true;
   try {
     const currentBalance = await fetchCurrentBalance(accountId);
     if (currentBalance === undefined) return true;
     const resultingBalance = currentBalance - amount;
     if (resultingBalance >= 0) return true;
-    const account = getAccountById(accountId);
     const currency = account ? account.currency : '';
     return await showNegativeBalanceWarning(
       `Atenție: acest cont va avea sold negativ, ${resultingBalance.toFixed(2)} ${currency}, după această operațiune.`
@@ -2062,15 +2065,33 @@ async function maybeAutoFillDestAmount() {
   }
 }
 
+// Repaying a credit-card account: default "Sumă destinație" to the outstanding debt (the
+// account's own balance is negative while charges are unpaid) — still a plain editable field,
+// e.g. for a partial repayment. Runs after maybeAutoFillDestAmount so it has the final say
+// for this account-selection event, without interfering with normal mirror/FX behavior once
+// the user starts typing amounts.
+async function maybeAutofillCreditRepayment() {
+  const dest = getAccountById(el('trDestAccount').value);
+  if (!dest || !dest.is_credit_account) return;
+  try {
+    const balance = await fetchCurrentBalance(dest.id);
+    if (balance !== undefined && balance < 0) {
+      el('trDestAmount').value = Math.abs(balance).toFixed(2);
+    }
+  } catch (err) {
+    // Best-effort convenience default only — leave the field as-is on failure.
+  }
+}
+
 el('trSourceAccount').addEventListener('change', () => {
   refreshDestAccountOptions();
   destAmountManuallyEdited = false;
-  maybeAutoFillDestAmount();
+  maybeAutoFillDestAmount().then(maybeAutofillCreditRepayment);
 });
 
 el('trDestAccount').addEventListener('change', () => {
   destAmountManuallyEdited = false;
-  maybeAutoFillDestAmount();
+  maybeAutoFillDestAmount().then(maybeAutofillCreditRepayment);
 });
 
 el('trSourceAmount').addEventListener('input', () => {
@@ -2601,9 +2622,12 @@ function renderBalances() {
   }
   container.innerHTML = dash.accounts.map(a => {
     const bal = balances.get(String(a.id)) || 0;
+    const amountText = (a.is_credit_account && bal < 0)
+      ? `${Math.abs(bal).toFixed(2)} ${escapeHtml(a.currency)} de rambursat`
+      : `${bal.toFixed(2)} ${escapeHtml(a.currency)}`;
     return `<div class="balance-row">
       <span class="balance-name">${escapeHtml(a.name)}</span>
-      <span class="balance-amount">${bal.toFixed(2)} ${escapeHtml(a.currency)}</span>
+      <span class="balance-amount">${amountText}</span>
     </div>`;
   }).join('');
 }
