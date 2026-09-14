@@ -4014,7 +4014,12 @@ el('recTypeToggle').addEventListener('click', (e) => {
 });
 
 // Shared by the frequency toggle, startEditRecurring, and resetRecurringForm so the three
-// stay in sync instead of duplicating the show/hide rules each time.
+// stay in sync instead of duplicating the show/hide rules each time. Also owns whether
+// "Data ultimei reînnoiri" is editable: read-only + pre-filled when editing an item that
+// already has a real last_occurrence_date (a genuine bookkeeping cursor, same as the backend
+// leaves it alone in that case) — otherwise a normal, empty, editable field, whether that's a
+// brand new item or an existing non-weekly item being switched to Săptămânal for the first
+// time via edit.
 function updateRecFrequencyFieldsVisibility() {
   const isWeekly = recFrequency === 'Săptămânal';
   el('recDayOfMonthField').classList.toggle('hidden', isWeekly);
@@ -4023,6 +4028,19 @@ function updateRecFrequencyFieldsVisibility() {
   el('recFrequencyHint').textContent = isWeekly
     ? 'La fiecare N săptămâni de la data ultimei reînnoiri, dacă itemul e activ, se generează automat o tranzacție de confirmat.'
     : 'În ziua (și, dacă e anual, luna) respectivă, dacă itemul e activ, se generează automat o tranzacție de confirmat.';
+
+  if (!isWeekly) {
+    el('recLastOccurrenceDate').disabled = false;
+    return;
+  }
+
+  const editingItem = editingRecurringId ? recurringItems.find(r => String(r.id) === String(editingRecurringId)) : null;
+  const hasExistingDate = !!(editingItem && editingItem.last_occurrence_date);
+  el('recLastOccurrenceDate').disabled = hasExistingDate;
+  if (hasExistingDate) {
+    el('recIntervalWeeks').value = editingItem.interval_weeks || '';
+    el('recLastOccurrenceDate').value = editingItem.last_occurrence_date || '';
+  }
 }
 
 el('recFrequencyToggle').addEventListener('click', (e) => {
@@ -4064,6 +4082,7 @@ function renderRecurringList() {
         </div>
         <div class="list-item-actions">
           <button type="button" class="icon-btn" data-edit="${r.id}">Editează</button>
+          <button type="button" class="icon-btn" data-delete="${r.id}" data-label="${escapeHtml(r.description || r.category)}">Șterge</button>
           <label class="switch">
             <input type="checkbox" data-toggle="${r.id}" ${r.active ? 'checked' : ''}>
             <span class="slider"></span>
@@ -4077,7 +4096,22 @@ function renderRecurringList() {
 el('recurringList').addEventListener('click', (e) => {
   const editBtn = e.target.closest('button[data-edit]');
   if (editBtn) startEditRecurring(editBtn.dataset.edit);
+  const delBtn = e.target.closest('button[data-delete]');
+  if (delBtn) deleteRecurringItem(delBtn.dataset.delete, delBtn.dataset.label);
 });
+
+async function deleteRecurringItem(id, label) {
+  if (!confirm(`Sigur ștergi definitiv ${label}? Nu afectează tranzacțiile deja generate în trecut.`)) return;
+  try {
+    await apiPost('deleteRecurring', { id });
+    recurringItems = recurringItems.filter(r => String(r.id) !== String(id));
+    if (String(editingRecurringId) === String(id)) resetRecurringForm();
+    renderRecurringList();
+    showGlobalBanner('Recurența a fost ștearsă.', 'success');
+  } catch (err) {
+    showGlobalBanner('Eroare la ștergere: ' + err.message, 'error');
+  }
+}
 
 el('recurringList').addEventListener('change', (e) => {
   const toggle = e.target.closest('input[data-toggle]');
@@ -4116,13 +4150,15 @@ function startEditRecurring(id) {
   el('recDayOfMonth').value = item.day_of_month;
   recFrequency = item.frequency || 'Lunar';
   document.querySelectorAll('#recFrequencyToggle button').forEach(b => b.classList.toggle('active', b.dataset.frequency === recFrequency));
-  updateRecFrequencyFieldsVisibility();
   el('recMonthOfYear').value = item.month_of_year || '1';
+  // Baseline from this item (blank if it was never Săptămânal) — prevents stale values
+  // leaking in from whatever a previous add/edit session left in these fields. If the item IS
+  // currently Săptămânal, updateRecFrequencyFieldsVisibility below re-derives the same values
+  // itself and locks the date; if the user switches the toggle to Săptămânal later in this
+  // same edit session, it leaves this baseline alone so it stays editable.
   el('recIntervalWeeks').value = item.interval_weeks || '';
   el('recLastOccurrenceDate').value = item.last_occurrence_date || '';
-  // Bookkeeping cursor -- updateRecurring never touches it (mirrors last_generated_period),
-  // so editing an existing item can't change it; shown here read-only, informational only.
-  el('recLastOccurrenceDate').disabled = true;
+  updateRecFrequencyFieldsVisibility();
   setFieldError('recAmountError', false);
   setFieldError('recDayOfMonthError', false);
   setFieldError('recIntervalWeeksError', false);
@@ -4177,8 +4213,10 @@ el('recurringForm').addEventListener('submit', async (e) => {
   const amountInvalid = !(amount > 0);
   const dayInvalid = !isWeekly && !(dayOfMonth >= 1 && dayOfMonth <= 28);
   const intervalWeeksInvalid = isWeekly && !(intervalWeeks >= 1);
-  // Only required at creation -- editing an existing item shows it read-only and never sends it.
-  const lastOccurrenceDateInvalid = isWeekly && !editingRecurringId && !lastOccurrenceDate;
+  // Required whenever the field is actually editable (creating new, or converting an existing
+  // non-weekly item to Săptămânal for the first time) -- exempt when it's disabled (editing an
+  // item that already has a real last_occurrence_date, which the backend leaves untouched).
+  const lastOccurrenceDateInvalid = isWeekly && !el('recLastOccurrenceDate').disabled && !lastOccurrenceDate;
   setFieldError('recAmountError', amountInvalid);
   setFieldError('recDayOfMonthError', dayInvalid);
   setFieldError('recIntervalWeeksError', intervalWeeksInvalid);
@@ -4194,7 +4232,8 @@ el('recurringForm').addEventListener('submit', async (e) => {
       await apiPost('updateRecurring', {
         id: editingRecurringId, account_id: accountId, type: recFormType,
         category, description, amount, day_of_month: dayOfMonth, frequency: recFrequency,
-        month_of_year: monthOfYear, interval_weeks: intervalWeeks, active: existing ? existing.active : true
+        month_of_year: monthOfYear, interval_weeks: intervalWeeks, last_occurrence_date: lastOccurrenceDate,
+        active: existing ? existing.active : true
       });
       showGlobalBanner('Recurența a fost actualizată.', 'success');
     } else {
@@ -4288,6 +4327,7 @@ function renderRecurringTransferList() {
         </div>
         <div class="list-item-actions">
           <button type="button" class="icon-btn" data-edit="${rt.id}">Editează</button>
+          <button type="button" class="icon-btn" data-delete="${rt.id}" data-label="${escapeHtml((srcAccount ? srcAccount.name : '?') + ' → ' + (dstAccount ? dstAccount.name : '?'))}">Șterge</button>
           <label class="switch">
             <input type="checkbox" data-toggle="${rt.id}" ${rt.active ? 'checked' : ''}>
             <span class="slider"></span>
@@ -4301,7 +4341,22 @@ function renderRecurringTransferList() {
 el('recurringTransferList').addEventListener('click', (e) => {
   const editBtn = e.target.closest('button[data-edit]');
   if (editBtn) startEditRecurringTransfer(editBtn.dataset.edit);
+  const delBtn = e.target.closest('button[data-delete]');
+  if (delBtn) deleteRecurringTransferItem(delBtn.dataset.delete, delBtn.dataset.label);
 });
+
+async function deleteRecurringTransferItem(id, label) {
+  if (!confirm(`Sigur ștergi definitiv transferul recurent ${label}? Nu afectează transferurile deja generate în trecut.`)) return;
+  try {
+    await apiPost('deleteRecurringTransfer', { id });
+    recurringTransfers = recurringTransfers.filter(rt => String(rt.id) !== String(id));
+    if (String(editingRecurringTransferId) === String(id)) resetRecurringTransferForm();
+    renderRecurringTransferList();
+    showGlobalBanner('Transferul recurent a fost șters.', 'success');
+  } catch (err) {
+    showGlobalBanner('Eroare la ștergere: ' + err.message, 'error');
+  }
+}
 
 el('recurringTransferList').addEventListener('change', (e) => {
   const toggle = e.target.closest('input[data-toggle]');

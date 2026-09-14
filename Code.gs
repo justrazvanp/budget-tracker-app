@@ -726,12 +726,17 @@ function addRecurring(p) {
   return { id: id };
 }
 
-// Deliberately leaves column 9 (last_generated_period) and column 13 (last_occurrence_date)
-// untouched — both are internal bookkeeping for generateRecurringTransactions_, not something
-// an edit should reset. A stale "YYYY-MM" left behind by a frequency change to/from Anual just
-// never matches the new check's key format, which correctly behaves as "not generated yet
-// under this scheme"; a frequency change to Săptămânal on an existing item behaves the same
-// way (no last_occurrence_date yet means it simply won't generate until recreated).
+// Deliberately leaves column 9 (last_generated_period) untouched — internal bookkeeping for
+// generateRecurringTransactions_, not something an edit should reset. A stale "YYYY-MM" left
+// behind by a frequency change to/from Anual just never matches the new check's key format,
+// which correctly behaves as "not generated yet under this scheme".
+//
+// column 13 (last_occurrence_date) gets the same treatment, but only once it's real: if this
+// row already has one (it's a Săptămânal item that's actually cadenced before), it's left
+// alone here too, same reasoning. If it doesn't (a non-weekly item being switched to
+// Săptămânal for the first time, or a weekly item that somehow never got seeded), p.last_
+// occurrence_date is required and gets written — otherwise converting an existing item to
+// Săptămânal via edit would silently never generate anything.
 function updateRecurring(p) {
   requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active', 'frequency']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
@@ -751,14 +756,42 @@ function updateRecurring(p) {
     var sheet = getSheet_(SHEETS.RECURRING);
     var rowIndex = findRowIndexById_(sheet, p.id);
     if (rowIndex === -1) throw new Error('Unknown recurring id: ' + p.id);
+
+    var existingLastOccurrenceDate = sheet.getRange(rowIndex, 13).getValue();
+    var newLastOccurrenceDate = null;
+    if (frequency === 'Săptămânal' && !(existingLastOccurrenceDate instanceof Date)) {
+      newLastOccurrenceDate = validateLastOccurrenceDate_(p.last_occurrence_date, frequency);
+    }
+
     sheet.getRange(rowIndex, 1, 1, 8).setValues([[
       Number(p.id), Number(p.account_id), p.type, p.category, p.description || '', amount, active, dayOfMonth
     ]]);
     sheet.getRange(rowIndex, 10, 1, 3).setValues([[frequency, monthOfYear, intervalWeeks]]);
+    if (newLastOccurrenceDate) {
+      sheet.getRange(rowIndex, 13).setValue(newLastOccurrenceDate);
+    }
   } finally {
     lock.releaseLock();
   }
 
+  return { id: Number(p.id) };
+}
+
+// Deletes only the Recurring rule row — any Transaction rows already generated from it in the
+// past (they carry their own recurring_id, not a live reference) are left completely
+// untouched, same as deleteTransaction/deleteTransfer never cascade.
+function deleteRecurring(p) {
+  requireFields_(p, ['id']);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.RECURRING);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown recurring id: ' + p.id);
+    sheet.deleteRow(rowIndex);
+  } finally {
+    lock.releaseLock();
+  }
   return { id: Number(p.id) };
 }
 
@@ -842,6 +875,23 @@ function updateRecurringTransfer(p) {
     lock.releaseLock();
   }
 
+  return { id: Number(p.id) };
+}
+
+// Deletes only the RecurringTransfers rule row — any Transfer rows already generated from it
+// in the past are left completely untouched, same as deleteRecurring.
+function deleteRecurringTransfer(p) {
+  requireFields_(p, ['id']);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(SHEETS.RECURRING_TRANSFERS);
+    var rowIndex = findRowIndexById_(sheet, p.id);
+    if (rowIndex === -1) throw new Error('Unknown recurring transfer id: ' + p.id);
+    sheet.deleteRow(rowIndex);
+  } finally {
+    lock.releaseLock();
+  }
   return { id: Number(p.id) };
 }
 
@@ -1360,6 +1410,7 @@ var ACTIONS_ = {
   getRecurring: getRecurring,
   addRecurring: addRecurring,
   updateRecurring: updateRecurring,
+  deleteRecurring: deleteRecurring,
   getBudgets: getBudgets,
   setBudget: setBudget,
   getPendingConfirmations: getPendingConfirmations,
@@ -1371,6 +1422,7 @@ var ACTIONS_ = {
   getRecurringTransfers: getRecurringTransfers,
   addRecurringTransfer: addRecurringTransfer,
   updateRecurringTransfer: updateRecurringTransfer,
+  deleteRecurringTransfer: deleteRecurringTransfer,
   confirmTransfer: confirmTransfer,
   getPendingTransferConfirmations: getPendingTransferConfirmations
 };
