@@ -251,6 +251,20 @@ function setupRecurringFrequencyMigration() {
   }
 }
 
+// Adds interval_weeks/last_occurrence_date to Recurring (both blank by default) — the third
+// frequency, Săptămânal ("every N weeks"), stores its cadence here instead of day_of_month/
+// last_generated_period. Existing rows are all Lunar/Anual, so both new columns stay blank
+// for them. Safe to re-run.
+function setupWeeklyRecurringMigration() {
+  var sheet = getSheet_(SHEETS.RECURRING);
+  if (sheet.getRange(1, 12).getValue() !== 'interval_weeks') {
+    sheet.getRange(1, 12).setValue('interval_weeks');
+  }
+  if (sheet.getRange(1, 13).getValue() !== 'last_occurrence_date') {
+    sheet.getRange(1, 13).setValue('last_occurrence_date');
+  }
+}
+
 // Creates the RecurringTransfers tab (mirrors Recurring's shape, minus the
 // type/category/description/account_id-single fields that don't apply to a transfer).
 // Safe to re-run — no-ops once the sheet already has a header row.
@@ -601,7 +615,7 @@ function getRecurring() {
   var sheet = getSheet_(SHEETS.RECURRING);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 1, lastRow - 1, 11).getValues().map(function (row) {
+  return sheet.getRange(2, 1, lastRow - 1, 13).getValues().map(function (row) {
     return {
       id: row[0],
       account_id: row[1],
@@ -613,12 +627,17 @@ function getRecurring() {
       day_of_month: row[7],
       last_generated_period: row[8],
       frequency: row[9] || 'Lunar',
-      month_of_year: row[10] || null
+      month_of_year: row[10] || null,
+      interval_weeks: row[11] || null,
+      last_occurrence_date: row[12] ? formatDate_(row[12]) : null
     };
   });
 }
 
-function validateDayOfMonth_(value) {
+// day_of_month only means something for Lunar/Anual items — Săptămânal ones (gated by
+// interval_weeks/last_occurrence_date instead) store it blank.
+function validateDayOfMonth_(value, frequency) {
+  if (frequency === 'Săptămânal') return '';
   var dayOfMonth = Number(value);
   if (!(dayOfMonth >= 1 && dayOfMonth <= 28 && Math.floor(dayOfMonth) === dayOfMonth)) {
     throw new Error('day_of_month must be an integer between 1 and 28');
@@ -626,12 +645,18 @@ function validateDayOfMonth_(value) {
   return dayOfMonth;
 }
 
-function validateFrequency_(value) {
-  if (value !== 'Lunar' && value !== 'Anual') throw new Error('frequency must be "Lunar" or "Anual"');
+// allowWeekly is only true for Recurring (cheltuieli/venituri recurente) — RecurringTransfers
+// doesn't have interval_weeks/last_occurrence_date columns or weekly generation logic, so it
+// keeps validating against just "Lunar"/"Anual".
+function validateFrequency_(value, allowWeekly) {
+  var valid = allowWeekly ? ['Lunar', 'Anual', 'Săptămânal'] : ['Lunar', 'Anual'];
+  if (valid.indexOf(value) === -1) {
+    throw new Error('frequency must be one of: ' + valid.join(', '));
+  }
   return value;
 }
 
-// month_of_year only means something for Anual items — Lunar ones store it blank.
+// month_of_year only means something for Anual items — every other frequency stores it blank.
 function validateMonthOfYear_(value, frequency) {
   if (frequency !== 'Anual') return '';
   var month = Number(value);
@@ -639,6 +664,27 @@ function validateMonthOfYear_(value, frequency) {
     throw new Error('month_of_year must be an integer between 1 and 12 for Anual frequency');
   }
   return month;
+}
+
+// interval_weeks only means something for Săptămânal items — every other frequency stores it
+// blank.
+function validateIntervalWeeks_(value, frequency) {
+  if (frequency !== 'Săptămânal') return '';
+  var weeks = Number(value);
+  if (!(weeks >= 1 && Math.floor(weeks) === weeks)) {
+    throw new Error('interval_weeks must be a positive integer for Săptămânal frequency');
+  }
+  return weeks;
+}
+
+// Required only at creation, only for Săptămânal — the seed value for last_occurrence_date.
+// Returns a real Date (mirrors how addTransaction/addTransfer store their own date column).
+function validateLastOccurrenceDate_(value, frequency) {
+  if (frequency !== 'Săptămânal') return '';
+  if (!value) throw new Error('last_occurrence_date is required for Săptămânal frequency');
+  var date = new Date(value);
+  if (isNaN(date.getTime())) throw new Error('last_occurrence_date must be a valid date');
+  return date;
 }
 
 // Defaults to "source" when omitted — the frontend doesn't even show a choice when the two
@@ -650,13 +696,15 @@ function validateFixedSide_(value) {
 }
 
 function addRecurring(p) {
-  requireFields_(p, ['account_id', 'type', 'category', 'amount', 'day_of_month', 'frequency']);
+  requireFields_(p, ['account_id', 'type', 'category', 'amount', 'frequency']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
   var amount = Number(p.amount);
   if (!(amount > 0)) throw new Error('amount must be a positive number');
-  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
-  var frequency = validateFrequency_(p.frequency);
+  var frequency = validateFrequency_(p.frequency, true);
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month, frequency);
   var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
+  var intervalWeeks = validateIntervalWeeks_(p.interval_weeks, frequency);
+  var lastOccurrenceDate = validateLastOccurrenceDate_(p.last_occurrence_date, frequency);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
 
@@ -668,7 +716,7 @@ function addRecurring(p) {
     id = nextId_(sheet);
     sheet.appendRow([
       id, Number(p.account_id), p.type, p.category, p.description || '', amount, true, dayOfMonth,
-      '', frequency, monthOfYear
+      '', frequency, monthOfYear, intervalWeeks, lastOccurrenceDate
     ]);
     sheet.getRange(sheet.getLastRow(), 9).setNumberFormat('@'); // last_generated_period stays plain text
   } finally {
@@ -678,18 +726,21 @@ function addRecurring(p) {
   return { id: id };
 }
 
-// Deliberately leaves column 9 (last_generated_period) untouched — that's internal
-// bookkeeping for generateRecurringTransactions_, not something an edit should reset. A
-// stale "YYYY-MM" left behind by a frequency change to/from Anual just never matches the
-// new check's key format, which correctly behaves as "not generated yet under this scheme".
+// Deliberately leaves column 9 (last_generated_period) and column 13 (last_occurrence_date)
+// untouched — both are internal bookkeeping for generateRecurringTransactions_, not something
+// an edit should reset. A stale "YYYY-MM" left behind by a frequency change to/from Anual just
+// never matches the new check's key format, which correctly behaves as "not generated yet
+// under this scheme"; a frequency change to Săptămânal on an existing item behaves the same
+// way (no last_occurrence_date yet means it simply won't generate until recreated).
 function updateRecurring(p) {
-  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active', 'day_of_month', 'frequency']);
+  requireFields_(p, ['id', 'account_id', 'type', 'category', 'amount', 'active', 'frequency']);
   if (['Income', 'Expense'].indexOf(p.type) === -1) throw new Error('type must be Income or Expense');
   var amount = Number(p.amount);
   if (!(amount > 0)) throw new Error('amount must be a positive number');
-  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
-  var frequency = validateFrequency_(p.frequency);
+  var frequency = validateFrequency_(p.frequency, true);
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month, frequency);
   var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
+  var intervalWeeks = validateIntervalWeeks_(p.interval_weeks, frequency);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.account_id) === -1) throw new Error('Unknown account_id: ' + p.account_id);
   var active = (p.active === true || String(p.active).toUpperCase() === 'TRUE');
@@ -703,7 +754,7 @@ function updateRecurring(p) {
     sheet.getRange(rowIndex, 1, 1, 8).setValues([[
       Number(p.id), Number(p.account_id), p.type, p.category, p.description || '', amount, active, dayOfMonth
     ]]);
-    sheet.getRange(rowIndex, 10, 1, 2).setValues([[frequency, monthOfYear]]);
+    sheet.getRange(rowIndex, 10, 1, 3).setValues([[frequency, monthOfYear, intervalWeeks]]);
   } finally {
     lock.releaseLock();
   }
@@ -736,8 +787,8 @@ function addRecurringTransfer(p) {
   var fixedAmount = Number(p.fixed_amount);
   if (!(fixedAmount > 0)) throw new Error('fixed_amount must be a positive number');
   var fixedSide = validateFixedSide_(p.fixed_side);
-  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
   var frequency = validateFrequency_(p.frequency);
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month, frequency);
   var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.source_account_id) === -1) throw new Error('Unknown source_account_id: ' + p.source_account_id);
@@ -769,8 +820,8 @@ function updateRecurringTransfer(p) {
   var fixedAmount = Number(p.fixed_amount);
   if (!(fixedAmount > 0)) throw new Error('fixed_amount must be a positive number');
   var fixedSide = validateFixedSide_(p.fixed_side);
-  var dayOfMonth = validateDayOfMonth_(p.day_of_month);
   var frequency = validateFrequency_(p.frequency);
+  var dayOfMonth = validateDayOfMonth_(p.day_of_month, frequency);
   var monthOfYear = validateMonthOfYear_(p.month_of_year, frequency);
   var accountsSheet = getSheet_(SHEETS.ACCOUNTS);
   if (findRowIndexById_(accountsSheet, p.source_account_id) === -1) throw new Error('Unknown source_account_id: ' + p.source_account_id);
@@ -1042,11 +1093,20 @@ function normalizePeriodValue_(value, isAnnual) {
   return String(value || '').trim();
 }
 
+// Adds `days` calendar days to a Date, returning a new Date (doesn't mutate the input).
+function addDays_(date, days) {
+  var result = new Date(date.getTime());
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
 // Meant to run on a daily time-driven trigger (Apps Script editor > Triggers), not via the
 // web app — it is intentionally not registered in ACTIONS_. For each active Recurring row
 // whose day_of_month has been reached and hasn't already been generated this month, appends
 // an unconfirmed Transaction and stamps last_generated_month — that stamp is what makes
-// re-running the same day (or later the same month) a no-op instead of a duplicate.
+// re-running the same day (or later the same month) a no-op instead of a duplicate. Săptămânal
+// items are gated separately (see the branch below) since they don't fit the day_of_month/
+// last_generated_period scheme at all — they cadence off last_occurrence_date instead.
 function generateRecurringTransactions() {
   var today = new Date();
   var currentDay = today.getDate();
@@ -1062,7 +1122,7 @@ function generateRecurringTransactions() {
   lock.waitLock(30000);
   var generated = 0;
   try {
-    var rows = recurringSheet.getRange(2, 1, lastRow - 1, 11).getValues();
+    var rows = recurringSheet.getRange(2, 1, lastRow - 1, 13).getValues();
     var txSheet = getSheet_(SHEETS.TRANSACTIONS);
 
     for (var i = 0; i < rows.length; i++) {
@@ -1070,8 +1130,33 @@ function generateRecurringTransactions() {
       var active = row[6] === true || String(row[6]).toUpperCase() === 'TRUE';
       if (!active) continue;
 
-      var dayOfMonth = Number(row[7]);
       var frequency = row[9] || 'Lunar';
+
+      if (frequency === 'Săptămânal') {
+        var intervalWeeks = Number(row[11]);
+        var lastOccurrenceDate = row[12];
+        // Not (yet) configured with a valid seed date -- nothing to cadence off, so skip
+        // rather than crash (e.g. an item switched to Săptămânal via edit, which leaves this
+        // column blank since updateRecurring never sets it).
+        if (!(intervalWeeks > 0) || !(lastOccurrenceDate instanceof Date)) continue;
+        var nextDueDate = addDays_(lastOccurrenceDate, intervalWeeks * 7);
+        if (today < nextDueDate) continue;
+
+        var wRecurringId = row[0], wAccountId = row[1], wType = row[2], wCategory = row[3],
+          wDescription = row[4], wAmount = row[5];
+        var wNewId = nextId_(txSheet);
+        txSheet.appendRow([
+          wNewId, Number(wAccountId), today, wType, wCategory, wDescription || '', Number(wAmount),
+          Number(wRecurringId), false
+        ]);
+        // Stamp the THEORETICAL due date, not today's real date -- otherwise a trigger that
+        // runs a day or two late would permanently push the cadence back by that much.
+        recurringSheet.getRange(2 + i, 13).setValue(nextDueDate);
+        generated++;
+        continue;
+      }
+
+      var dayOfMonth = Number(row[7]);
       var monthOfYear = row[10];
       var isAnnual = frequency === 'Anual';
       var lastGeneratedPeriod = normalizePeriodValue_(row[8], isAnnual);
